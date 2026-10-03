@@ -81,7 +81,8 @@ class Agent:
         self._reasoning = reasoning
         self._max_steps = max_steps
         self._codec = ToolCallCodec()  # parses/salvages/cleans the tool-call wire format
-        self._history: list[WireMessage] = [msg.system(self._build_system_prompt(persona))]
+        self._base_system = self._build_system_prompt(persona)
+        self._history: list[WireMessage] = [msg.system(self._base_system)]
         # Closable resources (MCP servers, DB connections) released on close().
         self._resources: list[Any] = []
 
@@ -155,26 +156,31 @@ class Agent:
         return True, self._fold_context(user_text)
 
     def _fold_context(self, user_text: str) -> str:
-        """Prefix the user turn with the real current date/time (the model's training
-        is frozen in the past, so it invents dates otherwise) + any recalled memory.
-        Folded INTO the user turn so the system-prompt prefix stays byte-stable for
-        vLLM's KV-cache reuse; history is strictly append-only."""
-        now = datetime.now().astimezone()
-        preamble = [
-            "Current date and time: "
-            + now.strftime("%A, %Y-%m-%d, %I:%M %p %Z").replace(" 0", " ")
-            + ". Resolve any relative dates/times from this."
-        ]
+        """Prefix the user turn with any recalled memory (used silently). The current
+        date/time lives in the system prompt instead (see _refresh_system_date) so the
+        model treats it as background and doesn't parrot it back."""
         memories = self._memory.search(user_text)
-        if memories:
-            block = "\n".join(f"- ({m.kind}) {m.content}" for m in memories)
-            preamble.append(f"[Relevant memory]\n{block}")
-        return "\n\n".join(preamble + [user_text])
+        if not memories:
+            return user_text
+        block = "\n".join(f"- ({m.kind}) {m.content}" for m in memories)
+        return f"[Relevant memory — use silently, don't restate]\n{block}\n\n{user_text}"
+
+    def _refresh_system_date(self) -> None:
+        """Keep the real current date/time in the SYSTEM prompt (the model's training
+        is frozen in the past, so it invents dates otherwise). Appended AFTER the base
+        prompt so the Nemotron 'detailed thinking' directive stays the first line."""
+        now = datetime.now().astimezone()
+        when = now.strftime("%A, %Y-%m-%d, %I:%M %p %Z").replace(" 0", " ")
+        self._history[0] = msg.system(
+            f"{self._base_system}\n\nThe current date and time is {when}. Use it directly "
+            "whenever the user asks about the date/time or you need it for scheduling."
+        )
 
     def _open_turn(self, user_text: str, images: list[str] | None) -> int:
-        """Trim, then append the user turn. Returns a checkpoint to roll back to if
-        the turn fails — a dangling user/assistant/tool message would break role
-        alternation on the next turn too."""
+        """Refresh the date, trim, then append the user turn. Returns a checkpoint to
+        roll back to if the turn fails — a dangling user/assistant/tool message would
+        break role alternation on the next turn too."""
+        self._refresh_system_date()
         self._trim_history()
         checkpoint = len(self._history)
         self._history.append(

@@ -22,6 +22,19 @@ class FrontmostAppTool(Tool):
         return ToolResult(content=out if ok else f"Error: {out}")
 
 
+class RunningAppsTool(Tool):
+    name = "mac_running_apps"
+    description = "List the apps currently open (running) on the Mac. Use to answer 'is X open?'."
+    parameters = {"type": "object", "properties": {}}
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        ok, out = run_applescript(
+            'tell application "System Events" to get name of every application process '
+            "whose background only is false"
+        )
+        return ToolResult(content=out if ok else f"Error: {out}")
+
+
 class OpenAppTool(Tool):
     name = "mac_open_app"
     description = "Open or switch to a Mac application by name (e.g. 'Safari', 'Notes')."
@@ -151,6 +164,7 @@ class HideAppTool(Tool):
 def tools() -> list[Tool]:
     return [
         FrontmostAppTool(),
+        RunningAppsTool(),
         OpenAppTool(),
         MinimizeWindowTool(),
         HideAppTool(),

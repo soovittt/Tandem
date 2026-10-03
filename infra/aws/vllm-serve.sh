@@ -23,13 +23,13 @@ sudo docker run --rm --gpus all -p 8000:8000 \
   ${HF_TOKEN:+-e HF_TOKEN=$HF_TOKEN} \
   vllm/vllm-openai:latest \
   --model "$MODEL" \
-  --max-model-len 32768 \
+  --max-model-len 16384 \
   --enable-prefix-caching \
   --enable-chunked-prefill \
   --max-num-batched-tokens 2048 \
-  --max-num-seqs 4 \
+  --max-num-seqs 2 \
   --kv-cache-dtype fp8 \
-  --gpu-memory-utilization 0.92 \
+  --gpu-memory-utilization 0.90 \
   --enable-auto-tool-choice \
   --tool-call-parser llama3_json
 # Efficiency flags (per docs/harness-plan.md): prefix-caching reuses the KV cache
