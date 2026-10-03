@@ -14,11 +14,30 @@ wraps each server's tools into our Tool interface. Servers that aren't installed
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tandem.integrations.mcp import MCPIntegration
 from tandem.tools.base import Tool
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_UV = shutil.which("uv") or "uv"
+
+
+def _whatsapp_command() -> list[str]:
+    """Launch the whatsapp-mcp Python server (cloned under vendor/) over stdio.
+
+    Invoke its own venv Python directly — NOT `uv run`, which hangs when nested
+    inside our already-uv-managed backend process. Run `uv sync` in that dir once
+    (see docs/whatsapp-setup.md) so the venv exists; we fall back to `uv run` only
+    if it doesn't.
+    """
+    base = Path(os.getenv("WHATSAPP_MCP_DIR") or (_REPO_ROOT / "vendor/whatsapp-mcp/whatsapp-mcp-server"))
+    venv_python = base / ".venv/bin/python"
+    if venv_python.exists():
+        return [str(venv_python), str(base / "main.py")]
+    return [_UV, "--directory", str(base), "run", "main.py"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +67,15 @@ MCP_SERVERS: list[McpServerConfig] = [
         name="filesystem",
         command=["npx", "-y", "@modelcontextprotocol/server-filesystem", str(Path.home())],
         note="Read/write files under the home directory.",
+    ),
+    McpServerConfig(
+        name="whatsapp",
+        command=_whatsapp_command(),
+        note="WhatsApp (your personal account via a local whatsmeow bridge): read/send "
+        "messages incl. GROUPS, search contacts/chats. Needs the Go bridge running + a "
+        "one-time QR link — see docs/whatsapp-setup.md. Data stays local (on-device).",
+        # Sends are consequential → gate behind approval; reads (search/list/get) are open.
+        approval_tools=("send_message", "send_file", "send_audio_message"),
     ),
 ]
 

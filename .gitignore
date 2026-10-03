@@ -29,3 +29,6 @@ mac-app/AppIcon.iconset/
 # macOS / tooling
 .DS_Store
 .reducer/
+
+# Vendored third-party MCP servers (clone separately)
+vendor/
