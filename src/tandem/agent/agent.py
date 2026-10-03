@@ -171,10 +171,18 @@ class Agent:
         prompt so the Nemotron 'detailed thinking' directive stays the first line."""
         now = datetime.now().astimezone()
         when = now.strftime("%A, %Y-%m-%d, %I:%M %p %Z").replace(" 0", " ")
-        self._history[0] = msg.system(
-            f"{self._base_system}\n\nThe current date and time is {when}. Use it directly "
-            "whenever the user asks about the date/time or you need it for scheduling."
+        date_line = (
+            f"Right now it is {when}. This is the real current date/time — state it "
+            "confidently if asked, and use it for any relative dates (today, tomorrow…)."
         )
+        # Put the date EARLY (right after the reasoning directive) so the small model
+        # actually attends to it, not buried at the end of a long system prompt.
+        if self._reasoning in ("off", "on"):
+            head = f"detailed thinking {self._reasoning}"
+            rest = self._base_system[len(head):].lstrip("\n")
+            self._history[0] = msg.system(f"{head}\n\n{date_line}\n\n{rest}")
+        else:
+            self._history[0] = msg.system(f"{date_line}\n\n{self._base_system}")
 
     def _open_turn(self, user_text: str, images: list[str] | None) -> int:
         """Refresh the date, trim, then append the user turn. Returns a checkpoint to
