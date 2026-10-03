@@ -7,6 +7,7 @@ final class ChatModel: ObservableObject {
         let id = UUID()
         let role: Role
         var text: String
+        var tools: [String] = []  // tools used to produce this assistant turn
     }
 
     @Published var messages: [Message] = []
@@ -14,6 +15,7 @@ final class ChatModel: ObservableObject {
     @Published var busy = false
     @Published var pendingApproval: PendingInfo?
     @Published var focusPing = 0  // bumped to re-focus the field when summoned
+    @Published var history: [(id: String, title: String)] = []
 
     init() { restore() }
 
@@ -27,6 +29,19 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    func loadHistory() {
+        Backend.shared.fetchConversations { [weak self] in self?.history = $0 }
+    }
+
+    /// Open a past chat from history.
+    func switchTo(_ id: String) {
+        guard !busy else { return }
+        Backend.shared.setSession(id)
+        messages = []
+        pendingApproval = nil
+        restore()
+    }
+
     func submit() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }
@@ -34,33 +49,35 @@ final class ChatModel: ObservableObject {
         messages.append(Message(role: .user, text: text))
         busy = true
 
-        // The assistant bubble appears on the first token and fills as they arrive;
-        // the `done` event replaces it with the authoritative (cleaned) answer.
+        // The assistant bubble appears on the first tool or token and fills in; tool
+        // events are shown as badges, and `done` sets the authoritative final text.
         var assistantId: UUID?
         var streamed = ""
+        var toolsUsed: [String] = []
+
+        func ensureAssistant() -> UUID {
+            if let id = assistantId { return id }
+            let bubble = Message(role: .assistant, text: streamed, tools: toolsUsed)
+            assistantId = bubble.id
+            messages.append(bubble)
+            return bubble.id
+        }
 
         Backend.shared.stream(
             text,
             onEvent: { [weak self] event in
                 guard let self else { return }
                 switch event {
+                case .tool(let name):
+                    toolsUsed.append(name)
+                    self.setTools(ensureAssistant(), toolsUsed)
                 case .token(let chunk):
                     streamed += chunk
-                    if let id = assistantId {
-                        self.setText(id, streamed)
-                    } else {
-                        let bubble = Message(role: .assistant, text: streamed)
-                        assistantId = bubble.id
-                        self.messages.append(bubble)
-                    }
-                case .tool:
-                    break  // a tool is running; the thinking indicator covers it
+                    self.setText(ensureAssistant(), streamed)
                 case .done(let finalText, _):
-                    if let id = assistantId {
-                        self.setText(id, finalText)
-                    } else {
-                        self.messages.append(Message(role: .assistant, text: finalText))
-                    }
+                    let id = ensureAssistant()
+                    self.setText(id, finalText)
+                    self.setTools(id, toolsUsed)
                 }
             },
             onPending: { [weak self] pending in
@@ -78,9 +95,11 @@ final class ChatModel: ObservableObject {
     }
 
     private func setText(_ id: UUID, _ text: String) {
-        if let i = messages.firstIndex(where: { $0.id == id }) {
-            messages[i].text = text
-        }
+        if let i = messages.firstIndex(where: { $0.id == id }) { messages[i].text = text }
+    }
+
+    private func setTools(_ id: UUID, _ tools: [String]) {
+        if let i = messages.firstIndex(where: { $0.id == id }) { messages[i].tools = tools }
     }
 
     func approve() { resolve(approved: true) }

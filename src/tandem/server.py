@@ -271,6 +271,12 @@ def whatsapp_connect() -> dict:
     return _whatsapp.ensure_running()
 
 
+@app.get("/conversations")
+def conversations_list() -> list[dict]:
+    """All past chats (most recent first) for the history list."""
+    return _get_state().conversations.list_sessions()
+
+
 @app.get("/conversation/{session_id}")
 def conversation(session_id: str) -> list[dict]:
     """The persisted thread for a session, so the app restores it on open."""

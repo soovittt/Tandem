@@ -11,6 +11,7 @@ struct CommandBarView: View {
     @ObservedObject var model: ChatModel
     var onEscape: () -> Void
     @FocusState private var focused: Bool
+    @State private var showHistory = false
 
     private let suggestions = ["What's on my calendar today?", "Open Spotify", "Summarize my unread emails"]
 
@@ -57,6 +58,15 @@ struct CommandBarView: View {
                 .focused($focused)
                 .onSubmit { model.submit() }
 
+            if !model.busy {
+                Button { model.loadHistory(); showHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath").font(.system(size: 14))
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Chat history")
+                .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                    HistoryList(model: model) { showHistory = false }
+                }
+            }
             if !model.messages.isEmpty && !model.busy {
                 Button { model.clear(); model.focusPing += 1 } label: {
                     Image(systemName: "square.and.pencil").font(.system(size: 15, weight: .medium))
@@ -150,14 +160,110 @@ private struct MessageRow: View {
         } else {
             HStack(alignment: .top, spacing: 10) {
                 TandemTile(size: 22)
-                MarkdownText(text: message.text)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 6) {
+                    if !message.tools.isEmpty {
+                        HStack(spacing: 5) {
+                            ForEach(dedupTools(message.tools), id: \.self) { ToolBadge(tool: $0) }
+                        }
+                    }
+                    if !message.text.isEmpty {
+                        MarkdownText(text: message.text)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.primary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.top, 1)
                 Spacer(minLength: 24)
             }
         }
+    }
+
+    private func dedupTools(_ tools: [String]) -> [String] {
+        var seen = Set<String>()
+        return tools.filter { seen.insert($0).inserted }
+    }
+}
+
+/// A small chip showing which tool the assistant used (with its logo/icon).
+private struct ToolBadge: View {
+    let tool: String
+
+    var body: some View {
+        let info = Self.info(tool)
+        HStack(spacing: 4) {
+            if let logo = info.logo, let image = bundledLogo(logo) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: 11, height: 11)
+            } else {
+                Image(systemName: info.symbol).font(.system(size: 9.5))
+            }
+            Text(info.label).font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(.white.opacity(0.07), in: Capsule())
+    }
+
+    /// (label, SF-symbol fallback, bundled-logo name or nil).
+    private static func info(_ tool: String) -> (label: String, symbol: String, logo: String?) {
+        switch tool {
+        case "send_message", "list_chats", "list_messages", "search_contacts", "get_chat",
+             "get_direct_chat_by_contact", "get_contact_chats", "get_last_interaction", "get_message_context":
+            return ("WhatsApp", "bubble.left.and.bubble.right.fill", "whatsapp")
+        case "messages": return ("Messages", "message.fill", nil)
+        case "notes": return ("Notes", "note.text", nil)
+        case "mail": return ("Mail", "envelope.fill", nil)
+        case "reminders": return ("Reminders", "checklist", nil)
+        case "calendar": return ("Calendar", "calendar", nil)
+        case "contacts": return ("Contacts", "person.crop.circle.fill", nil)
+        case "maps": return ("Maps", "map.fill", nil)
+        case "mac_open_app": return ("Open app", "macwindow.badge.plus", nil)
+        case "mac_minimize_window": return ("Minimize", "minus.rectangle", nil)
+        case "mac_hide_app": return ("Hide", "eye.slash", nil)
+        case "mac_frontmost_app": return ("Focused app", "macwindow", nil)
+        case "mac_running_apps": return ("Open apps", "square.grid.2x2", nil)
+        case "mac_run_shortcut": return ("Shortcut", "bolt", nil)
+        case "remember": return ("Memory", "brain", nil)
+        case "save_skill": return ("Skill", "wand.and.stars", nil)
+        default: return (tool, "wrench.and.screwdriver", nil)
+        }
+    }
+}
+
+/// Dropdown of past chats.
+private struct HistoryList: View {
+    @ObservedObject var model: ChatModel
+    var onPick: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("CHATS")
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                .padding(.horizontal, 12).padding(.top, 10)
+            if model.history.isEmpty {
+                Text("No past chats yet")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(12)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(model.history, id: \.id) { chat in
+                            Button { model.switchTo(chat.id); onPick() } label: {
+                                Text(chat.title.isEmpty ? "New chat" : chat.title)
+                                    .font(.system(size: 12.5)).lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 12).padding(.vertical, 7)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(maxHeight: 300)
+            }
+        }
+        .frame(width: 300)
     }
 }
 

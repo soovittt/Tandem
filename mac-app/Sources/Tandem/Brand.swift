@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+/// Load a bundled integration logo PNG (Resources/logos/<name>.png).
+func bundledLogo(_ name: String) -> NSImage? {
+    guard let url = Bundle.main.resourceURL?.appendingPathComponent("logos/\(name).png") else { return nil }
+    return NSImage(contentsOf: url)
+}
+
 extension Color {
     init(hex: UInt) {
         self.init(

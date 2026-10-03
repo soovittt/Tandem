@@ -34,6 +34,26 @@ final class Backend {
         UserDefaults.standard.set(sessionId, forKey: "tandem.sessionId")
     }
 
+    func setSession(_ id: String) {
+        sessionId = id
+        UserDefaults.standard.set(id, forKey: "tandem.sessionId")
+    }
+
+    /// All past chats (most recent first) for the history list.
+    func fetchConversations(completion: @escaping ([(id: String, title: String)]) -> Void) {
+        let url = base.appendingPathComponent("conversations")
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var out: [(id: String, title: String)] = []
+            if let data, let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                out = arr.compactMap {
+                    guard let id = $0["session_id"] as? String else { return nil }
+                    return (id, ($0["title"] as? String) ?? "New chat")
+                }
+            }
+            DispatchQueue.main.async { completion(out) }
+        }.resume()
+    }
+
     /// Restore the persisted thread for the current session (on launch).
     func fetchConversation(completion: @escaping ([(role: String, text: String)]) -> Void) {
         let url = base.appendingPathComponent("conversation/\(sessionId)")

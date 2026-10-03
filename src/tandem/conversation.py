@@ -56,6 +56,26 @@ class ConversationStore:
             ).fetchall()
         return [{"role": r["role"], "text": r["text"]} for r in reversed(rows)]
 
+    def list_sessions(self, limit: int = 60) -> list[dict[str, str]]:
+        """All conversations, most-recent first: {session_id, title (first message),
+        updated_at}. For the chat-history list."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT t.session_id, t.text AS title, g.updated_at
+                FROM turns t
+                JOIN (SELECT session_id, MAX(created_at) AS updated_at, MIN(id) AS first_id
+                      FROM turns GROUP BY session_id) g
+                  ON t.session_id = g.session_id AND t.id = g.first_id
+                ORDER BY g.updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {"session_id": r["session_id"], "title": r["title"], "updated_at": r["updated_at"]}
+            for r in rows
+        ]
+
     def clear(self, session_id: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
