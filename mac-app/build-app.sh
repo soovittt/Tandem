@@ -13,6 +13,11 @@ rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/Tandem"
 [ -f AppIcon.icns ] && cp AppIcon.icns "${APP}/Contents/Resources/AppIcon.icns"
+# Integration brand logos (shown in the Control Center integrations list).
+if [ -d logos ]; then
+  mkdir -p "${APP}/Contents/Resources/logos"
+  cp logos/*.png "${APP}/Contents/Resources/logos/" 2>/dev/null || true
+fi
 
 cat > "${APP}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

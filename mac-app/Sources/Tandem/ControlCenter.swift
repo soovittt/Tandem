@@ -167,16 +167,45 @@ private struct IntegrationsPane: View {
     }
 }
 
+/// Real brand logo (bundled PNG under Resources/logos) for a known integration;
+/// falls back to the SF Symbol the backend sent.
+private struct AppLogo: View {
+    let id: String
+    let fallbackSymbol: String
+    var size: CGFloat = 24
+
+    private static let asset: [String: String] = [
+        "apple": "apple", "whatsapp": "whatsapp", "gmail": "gmail",
+        "notion": "notion", "drive": "googledrive",
+    ]
+
+    var body: some View {
+        if let name = Self.asset[id], let image = Self.load(name) {
+            Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: fallbackSymbol)
+                .font(.system(size: size * 0.72))
+                .frame(width: size, height: size)
+        }
+    }
+
+    private static func load(_ name: String) -> NSImage? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("logos/\(name).png") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }
+}
+
 private struct IntegrationRow: View {
     let item: IntegrationItem
     var onConnect: () -> Void
 
     var body: some View {
         HStack(spacing: 13) {
-            Image(systemName: item.icon)
-                .font(.system(size: 17))
-                .frame(width: 26)
-                .foregroundStyle(item.status == "coming_soon" ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            AppLogo(id: item.id, fallbackSymbol: item.icon, size: 24)
+                .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).font(.system(size: 13.5, weight: .semibold))
                 Text(item.desc).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
