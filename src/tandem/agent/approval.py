@@ -130,9 +130,11 @@ class BrokeredApproval:
 
     def _describe(self, call: ToolCall, tool: Tool) -> str:
         """A clean, human-readable summary for the approval card -- NOT the raw
-        function call. Shows what the action will do plus its key details."""
+        function call. Just the first line of the tool's description (MCP tools carry
+        verbose docstrings) plus the key argument values."""
+        summary = (tool.description or call.name).strip().splitlines()[0][:160]
         detail = self._humanize_args(call.arguments)
-        return f"{tool.description}\n\n{detail}" if detail else tool.description
+        return f"{summary}\n\n{detail}" if detail else summary
 
     def _humanize_args(self, arguments: dict[str, Any]) -> str:
         """Render arguments as readable 'Label: value' lines, skipping empties and

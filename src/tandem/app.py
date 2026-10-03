@@ -31,6 +31,7 @@ from tandem.tools.skill_tools import SaveSkillTool
 from tandem.tools.web_search import TavilyProvider, WebSearchTool
 from tandem.mac.pack import mac_system_tools
 from tandem.mcp_servers import load_mcp_tools
+from tandem.whatsapp_bridge import WhatsAppSendTool
 
 MAC_PERSONA = (
     "You are Tandem, a personal AI that lives on the user's Mac. You can see what "
@@ -143,7 +144,11 @@ def build_mac_agent(
     mcp_tools, mcp_integrations = mcp if mcp is not None else load_mcp_tools()
 
     extra: list[Tool] = list(mac_system_tools())
-    extra.extend(mcp_tools)
+    # Replace the raw whatsapp `send_message` with our name-resolving version (the
+    # model passes group/contact NAMES, not JIDs). Keep all other MCP tools as-is.
+    extra.extend(t for t in mcp_tools if t.name != "send_message")
+    if any(t.name == "send_message" for t in mcp_tools):
+        extra.append(WhatsAppSendTool())
 
     agent = _assemble_agent(
         config,

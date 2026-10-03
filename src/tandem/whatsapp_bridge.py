@@ -11,13 +11,23 @@ use it). We just start the process and proxy its /api/qr.
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import subprocess
 import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
+
+from tandem.domain.tool import ToolResult
+from tandem.tools.base import Tool
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_BRIDGE_DIR = _REPO_ROOT / "vendor/whatsapp-mcp/whatsapp-bridge"
+_CHATS_DB = _BRIDGE_DIR / "store" / "messages.db"
+_SEND_URL = "http://localhost:8080/api/send"
+_NOISE = re.compile(r"\b(group|chat|jid|the|on whatsapp|whatsapp)\b", re.IGNORECASE)
 
 
 class WhatsAppBridge:
@@ -78,3 +88,69 @@ class WhatsAppBridge:
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
             self._proc = None
+
+
+class WhatsAppSendTool(Tool):
+    """Send a WhatsApp message by NAME. The 8B tends to pass a placeholder like
+    'Bhaisexuals group JID' instead of a real JID, which hangs the bridge — so we
+    resolve the person/group name to its actual chat JID ourselves (from the bridge's
+    local chat DB) before sending. Also accepts a phone number or a raw JID."""
+
+    name = "send_message"
+    description = "Send a WhatsApp message to a person or group by name (I find the right chat)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "recipient": {"type": "string",
+                          "description": "Person or group NAME (e.g. 'Mom', 'Climbing Crew'), a phone number, or a JID."},
+            "message": {"type": "string", "description": "The message text to send."},
+        },
+        "required": ["recipient", "message"],
+    }
+    requires_approval = True
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        recipient = str(kwargs.get("recipient", "")).strip()
+        message = str(kwargs.get("message", ""))
+        jid = self._resolve_jid(recipient)
+        if "@" not in jid and not jid.replace("+", "").isdigit():
+            return ToolResult(
+                content=f"Couldn't find a WhatsApp chat matching '{recipient}'. "
+                "Try the exact contact/group name, or a phone number."
+            )
+        try:
+            body = json.dumps({"recipient": jid, "message": message}).encode()
+            req = urllib.request.Request(_SEND_URL, data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:
+            return ToolResult(content=f"WhatsApp send failed: {exc}")
+        if data.get("success"):
+            return ToolResult(content=f"Sent WhatsApp message to {recipient}.")
+        return ToolResult(content=f"WhatsApp: {data.get('message', 'send failed')}")
+
+    def _resolve_jid(self, recipient: str) -> str:
+        """Map a person/group name to its chat JID. Passes through JIDs/phone numbers."""
+        if "@" in recipient:
+            return recipient
+        if recipient.replace("+", "").isdigit():
+            return recipient.lstrip("+")
+        query = _NOISE.sub("", recipient).strip().lower()
+        if not query or not _CHATS_DB.exists():
+            return recipient
+        try:
+            conn = sqlite3.connect(f"file:{_CHATS_DB}?mode=ro", uri=True)
+            rows = conn.execute(
+                "SELECT jid, name FROM chats WHERE name IS NOT NULL ORDER BY last_message_time DESC"
+            ).fetchall()
+            conn.close()
+        except Exception:
+            return recipient
+        fuzzy: str | None = None
+        for jid, name in rows:
+            low = (name or "").strip().lower()
+            if low == query:
+                return jid  # exact (case-insensitive) wins
+            if fuzzy is None and (query in low or low in query):
+                fuzzy = jid
+        return fuzzy or recipient
