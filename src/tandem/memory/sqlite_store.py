@@ -11,6 +11,7 @@ means adding another implementation of MemoryStore -- nothing else changes.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,17 +44,22 @@ class SQLiteMemoryStore:
 
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False: one agent's connection is reused across FastAPI
+        # worker threads (a session can be served by different threads turn to turn).
+        # A lock serializes access so the shared connection stays safe.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
         self._conn.executescript(_SCHEMA)
 
     def add(self, record: MemoryRecord) -> MemoryRecord:
         created_at = record.created_at or datetime.now(timezone.utc).isoformat()
-        cursor = self._conn.execute(
-            "INSERT INTO memories (kind, content, created_at) VALUES (?, ?, ?)",
-            (record.kind, record.content, created_at),
-        )
-        self._conn.commit()
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT INTO memories (kind, content, created_at) VALUES (?, ?, ?)",
+                (record.kind, record.content, created_at),
+            )
+            self._conn.commit()
         record.id = cursor.lastrowid
         record.created_at = created_at
         return record
@@ -62,30 +68,33 @@ class SQLiteMemoryStore:
         match = _to_fts_query(query)
         if not match:
             return []
-        rows = self._conn.execute(
-            """
-            SELECT m.id, m.kind, m.content, m.created_at
-            FROM memories_fts f
-            JOIN memories m ON m.id = f.rowid
-            WHERE memories_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (match, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT m.id, m.kind, m.content, m.created_at
+                FROM memories_fts f
+                JOIN memories m ON m.id = f.rowid
+                WHERE memories_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (match, limit),
+            ).fetchall()
         return [_row_to_record(r) for r in rows]
 
     def all(self) -> list[MemoryRecord]:
-        rows = self._conn.execute(
-            "SELECT id, kind, content, created_at FROM memories ORDER BY id DESC"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, kind, content, created_at FROM memories ORDER BY id DESC"
+            ).fetchall()
         return [_row_to_record(r) for r in rows]
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
 
 def _to_fts_query(query: str) -> str:

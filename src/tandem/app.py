@@ -10,20 +10,21 @@ change it here and nowhere else.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from tandem.agent.agent import Agent
 from tandem.agent.approval import ApprovalPolicy, AutoApprove
-from tandem.agent.orchestrator import Orchestrator
 from tandem.config import AppConfig
 from tandem.guardrails.base import Guardrails
-from tandem.guardrails.builtin import PIIRedactionGuardrail
 from tandem.integrations.base import Integration
 from tandem.integrations.filesystem import FilesystemIntegration
 from tandem.llm.openai_compatible import OpenAICompatibleLLM
 from tandem.memory.base import MemoryStore
 from tandem.memory.sqlite_store import SQLiteMemoryStore
 from tandem.security.subprocess_sandbox import SubprocessSandbox
+from tandem.skills.base import SkillStore
 from tandem.skills.file_store import FileSkillStore
-from tandem.tools.base import ToolRegistry
+from tandem.tools.base import Tool, ToolRegistry
 from tandem.tools.code_execution import RunCommandTool
 from tandem.tools.memory_tools import RecallTool, RememberTool
 from tandem.tools.skill_tools import SaveSkillTool
@@ -45,34 +46,38 @@ DEFAULT_PERSONA = (
     "help them decide the next useful step -- rather than just answering questions."
 )
 
+# Apple apps that apple-mcp covers; the native AppleScript tools are a fallback only.
+_APPLE_APP_TOOLS = frozenset({"messages", "notes", "reminders", "calendar", "mail", "contacts"})
 
-def build_agent(
-    config: AppConfig | None = None,
+
+def _assemble_agent(
+    config: AppConfig,
     *,
-    approval: ApprovalPolicy | None = None,
-    guardrails: Guardrails | None = None,
-    persona: str = DEFAULT_PERSONA,
+    memory: MemoryStore,
+    skills: SkillStore,
+    persona: str,
+    approval: ApprovalPolicy | None,
+    guardrails: Guardrails | None,
+    extra_tools: Iterable[Tool] = (),
+    max_steps: int = 6,
 ) -> Agent:
-    """Assemble a fully-wired Agent from configuration."""
-    config = config or AppConfig.from_env()
+    """Wire an Agent: LLM backend + the always-on memory/skills tools + any extras.
 
-    llm = OpenAICompatibleLLM(config.llm)
-    memory = _build_memory(config)
-    skills = FileSkillStore(config.skills_dir)
-
+    The single place the common Agent assembly lives, so every builder stays in
+    sync. Duplicate tool names among `extra_tools` are skipped (native vs MCP).
+    """
     tools = ToolRegistry()
     tools.register(RememberTool(memory))
     tools.register(RecallTool(memory))
     tools.register(SaveSkillTool(skills))
-    tools.register(RunCommandTool(SubprocessSandbox(config.data_dir / "sandbox")))
-    if config.tavily_api_key:
-        tools.register(WebSearchTool(TavilyProvider(config.tavily_api_key)))
-    for integration in _build_integrations(config):
-        for tool in integration.tools():
+    for tool in extra_tools:
+        try:
             tools.register(tool)
+        except ValueError:
+            pass  # a tool with this name already won (native beats MCP, etc.)
 
     return Agent(
-        llm=llm,
+        llm=OpenAICompatibleLLM(config.llm),
         tools=tools,
         memory=memory,
         skills=skills,
@@ -81,55 +86,36 @@ def build_agent(
         persona=persona,
         tool_mode=config.tool_mode,
         reasoning=config.reasoning,
+        max_steps=max_steps,
     )
 
 
-def build_project_agent(
-    config: AppConfig,
+def build_agent(
+    config: AppConfig | None = None,
     *,
-    project_id: int,
-    project_name: str,
-    integration_names: list[str],
     approval: ApprovalPolicy | None = None,
+    guardrails: Guardrails | None = None,
+    persona: str = DEFAULT_PERSONA,
 ) -> Agent:
-    """
-    An agent scoped to ONE project: its memory and skills live under the project's
-    own directory (isolated from other projects), and its persona knows the
-    project name + which systems are connected. This is what makes the assistant
-    actually "know" the workspace it's in.
-    """
-    pdir = config.data_dir / "projects" / str(project_id)
+    """A general-purpose assistant (web search + sandboxed shell + file access).
+    Used by the CLI REPL."""
+    config = config or AppConfig.from_env()
+    memory = _build_memory(config)
 
-    llm = OpenAICompatibleLLM(config.llm)
-    memory = _build_project_memory(config, project_id, pdir)
-    skills = FileSkillStore(pdir / "skills")
-
-    tools = ToolRegistry()
-    tools.register(RememberTool(memory))
-    tools.register(RecallTool(memory))
-    tools.register(SaveSkillTool(skills))
-    tools.register(RunCommandTool(SubprocessSandbox(pdir / "sandbox")))
+    extra: list[Tool] = [RunCommandTool(SubprocessSandbox(config.data_dir / "sandbox"))]
     if config.tavily_api_key:
-        tools.register(WebSearchTool(TavilyProvider(config.tavily_api_key)))
+        extra.append(WebSearchTool(TavilyProvider(config.tavily_api_key)))
     for integration in _build_integrations(config):
-        for tool in integration.tools():
-            tools.register(tool)
+        extra.extend(integration.tools())
 
-    connected = ", ".join(integration_names) if integration_names else "none connected yet"
-    persona = (
-        f"{DEFAULT_PERSONA}\n\n"
-        f"You are the assistant for the '{project_name}' project. Connected systems "
-        f"you may draw on: {connected}. Keep memory and answers scoped to this project."
-    )
-    return Agent(
-        llm=llm,
-        tools=tools,
+    return _assemble_agent(
+        config,
         memory=memory,
-        skills=skills,
-        approval=approval or AutoApprove(),
+        skills=FileSkillStore(config.skills_dir),
         persona=persona,
-        tool_mode=config.tool_mode,
-        reasoning=config.reasoning,
+        approval=approval,
+        guardrails=guardrails,
+        extra_tools=extra,
     )
 
 
@@ -143,87 +129,37 @@ def build_mac_agent(
     The Mac personal AI: Nemotron reasoning + native Mac app control + MCP tools.
 
     Tools come from three composable sources (all behind the same Tool interface):
-      1. memory/skills tools (remember / recall / save_skill)
-      2. native Mac app pack (Calendar, Reminders, Notes, Messages, system) — reliable
-      3. MCP servers (universal accessibility control, Apple apps, files, ...) — enabled
-         via TANDEM_MCP_SERVERS. Native tools win on name clashes.
+      1. memory/skills tools (remember / recall / save_skill) — via _assemble_agent
+      2. system control (frontmost / open / minimize / hide / shortcut) — always on
+      3. MCP servers (apple-mcp for Apple apps, cua for any app) via TANDEM_MCP_SERVERS;
+         native AppleScript app tools are a fallback only when MCP doesn't cover them.
     """
     config = config or AppConfig.from_env()
     pdir = config.data_dir / "mac"
-
-    llm = OpenAICompatibleLLM(config.llm)
     memory = _build_project_memory(config, 0, pdir)  # project 0 = personal Mac memory
-    skills = FileSkillStore(pdir / "skills")
 
-    tools = ToolRegistry()
-    tools.register(RememberTool(memory))
-    tools.register(RecallTool(memory))
-    tools.register(SaveSkillTool(skills))
-
-    # System tools always on (no MCP server covers frontmost/open/shortcut).
-    for tool in mac_system_tools():
-        tools.register(tool)
-
-    # MCP servers (apple-mcp for Apple apps, open-computer-use/cua for any app).
+    extra: list[Tool] = list(mac_system_tools())
     mcp_tools, mcp_integrations = load_mcp_tools()
-    for tool in mcp_tools:
-        try:
-            tools.register(tool)
-        except ValueError:
-            pass  # skip duplicate tool names
+    extra.extend(mcp_tools)
+    # Native Apple-app tools only when no MCP server already covers those apps.
+    if not any(t.name in _APPLE_APP_TOOLS for t in mcp_tools):
+        extra.extend(mac_app_tools())
 
-    # Native Apple-app tools are a reliable FALLBACK — only when no MCP server
-    # already covers those apps (avoids confusing duplicates + double approval).
-    _apple_app_tools = {"messages", "notes", "reminders", "calendar", "mail", "contacts"}
-    if not any(t.name in _apple_app_tools for t in mcp_tools):
-        for tool in mac_app_tools():
-            try:
-                tools.register(tool)
-            except ValueError:
-                pass
-
-    agent = Agent(
-        llm=llm,
-        tools=tools,
+    agent = _assemble_agent(
+        config,
         memory=memory,
-        skills=skills,
-        approval=approval or AutoApprove(),
-        guardrails=guardrails,
+        skills=FileSkillStore(pdir / "skills"),
         persona=MAC_PERSONA,
-        tool_mode=config.tool_mode,
-        reasoning=config.reasoning,
+        approval=approval,
+        guardrails=guardrails,
+        extra_tools=extra,
         max_steps=8,
     )
-    # Release MCP subprocesses + the DB connection when this agent is evicted.
+    # Release MCP subprocesses + the memory handle when this agent is evicted.
     for integration in mcp_integrations:
         agent.add_resource(integration)
     agent.add_resource(memory)
     return agent
-
-
-def build_orchestrator(
-    config: AppConfig | None = None,
-    *,
-    approval: ApprovalPolicy | None = None,
-) -> Orchestrator:
-    """Build an Orchestrator whose subagents share this config's memory + tools."""
-    config = config or AppConfig.from_env()
-    llm = OpenAICompatibleLLM(config.llm)
-
-    def subagent_factory(focused_persona: str) -> Agent:
-        # Each subagent is a fresh Agent over the SAME stores (shared memory),
-        # just with a narrower persona.
-        return build_agent(config, approval=approval, persona=focused_persona)
-
-    return Orchestrator(llm=llm, subagent_factory=subagent_factory)
-
-
-def build_guardrails() -> Guardrails:
-    """A sensible enterprise/team preset. Off by default in build_agent."""
-    return Guardrails(
-        input=[PIIRedactionGuardrail()],
-        output=[PIIRedactionGuardrail()],
-    )
 
 
 def _build_memory(config: AppConfig) -> MemoryStore:
