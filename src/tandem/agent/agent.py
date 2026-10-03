@@ -365,12 +365,13 @@ class Agent:
 
 _OPERATING_RULES = (
     "Operating rules:\n"
-    "- You are a full general assistant: answer general questions directly from your own "
-    "knowledge. You do NOT need a tool for everything, and never refuse a question just "
-    "because it isn't about the Mac.\n"
-    "- Use a tool only to take an action on the Mac or to fetch the user's own data "
-    "(messages, files, calendar, contacts…). Relevant memory is already provided to you.\n"
-    "- Remember durable facts the user shares about themselves.\n"
+    "- When the user tells you to DO something — make/create/add a note, reminder, or "
+    "event; send a message; open/close/minimize an app — actually DO IT by calling the "
+    "matching tool. Never just describe how, or write the content as your reply.\n"
+    "- Answer general questions (facts, explanations, writing, math, chat) directly from "
+    "your own knowledge — no tool needed, and never refuse just because it isn't about "
+    "the Mac.\n"
+    "- Relevant memory is already provided to you; remember durable facts the user shares.\n"
     "- When you work out a repeatable procedure, save it as a skill."
 )
 

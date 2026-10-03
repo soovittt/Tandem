@@ -26,7 +26,7 @@ from tandem.skills.base import SkillStore
 from tandem.skills.file_store import FileSkillStore
 from tandem.tools.base import Tool, ToolRegistry
 from tandem.tools.code_execution import RunCommandTool
-from tandem.tools.memory_tools import RecallTool, RememberTool
+from tandem.tools.memory_tools import RememberTool
 from tandem.tools.skill_tools import SaveSkillTool
 from tandem.tools.web_search import TavilyProvider, WebSearchTool
 from tandem.mac.pack import mac_system_tools
@@ -69,7 +69,8 @@ def _assemble_agent(
     """
     tools = ToolRegistry()
     tools.register(RememberTool(memory))
-    tools.register(RecallTool(memory))
+    # No RecallTool: relevant memory is auto-injected each turn, and the small model
+    # otherwise spuriously calls recall instead of the tool the user actually wants.
     tools.register(SaveSkillTool(skills))
     for tool in extra_tools:
         try:
