@@ -11,11 +11,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "openai>=3.19.2",
-    "passlib[bcrypt]>=1.7.4",
-    "pyjwt>=2.15.1",
     "python-dotenv>=1.2.3",
-    "python-multipart>=0.0.32",
-    "sqlmodel>=0.0.47",
     "uvicorn>=0.54.0",
 ]
 

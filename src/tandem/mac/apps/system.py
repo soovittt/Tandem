@@ -89,6 +89,22 @@ def _resolve_process(app: str) -> str | None:
     return None
 
 
+def _act_on_process(app: str, make_script: Any) -> tuple[bool, str, str]:
+    """Run an AppleScript targeting `app`'s process, trying the given name directly
+    first (the common exact-name fast path, one osascript call) and only resolving
+    the real process name ("Chrome" -> "Google Chrome") if that first call fails.
+    Returns (ok, output, label)."""
+    ok, out = run_applescript(make_script(as_applescript_string(app)))
+    if ok:
+        return True, out, app
+    proc = _resolve_process(app)
+    if proc is None:
+        return False, f"'{app}' doesn't appear to be running.", app
+    if proc != app:  # a different real name — retry once with it
+        ok, out = run_applescript(make_script(as_applescript_string(proc)))
+    return ok, out, proc
+
+
 class MinimizeWindowTool(Tool):
     name = "mac_minimize_window"
     description = "Minimize the front window of an app (or the frontmost app if 'app' is omitted)."
@@ -99,26 +115,20 @@ class MinimizeWindowTool(Tool):
 
     def run(self, **kwargs: Any) -> ToolResult:
         app = kwargs.get("app")
-        if app:
-            proc = _resolve_process(app)
-            if not proc:
-                return ToolResult(content=f"'{app}' doesn't appear to be running.")
-            target = as_applescript_string(proc)
-            script = (
-                f'tell application "System Events" to tell process {target} '
-                'to set value of attribute "AXMinimized" of window 1 to true'
-            )
-            label = proc
-        else:
-            script = (
+        if not app:
+            ok, out = run_applescript(
                 'tell application "System Events"\n'
-                '  set p to first application process whose frontmost is true\n'
+                "  set p to first application process whose frontmost is true\n"
                 '  set value of attribute "AXMinimized" of window 1 of p to true\n'
                 "end tell"
             )
-            label = "the front window"
-        ok, out = run_applescript(script)
-        return ToolResult(content=f"Minimized {label}." if ok else f"Error: {out}")
+            return ToolResult(content="Minimized the front window." if ok else f"Error: {out}")
+        ok, out, proc = _act_on_process(
+            app,
+            lambda t: f'tell application "System Events" to tell process {t} '
+            'to set value of attribute "AXMinimized" of window 1 to true',
+        )
+        return ToolResult(content=f"Minimized {proc}." if ok else f"Error: {out}")
 
 
 class HideAppTool(Tool):
@@ -131,12 +141,9 @@ class HideAppTool(Tool):
     }
 
     def run(self, **kwargs: Any) -> ToolResult:
-        proc = _resolve_process(kwargs["app"])
-        if not proc:
-            return ToolResult(content=f"'{kwargs['app']}' doesn't appear to be running.")
-        target = as_applescript_string(proc)
-        ok, out = run_applescript(
-            f'tell application "System Events" to set visible of process {target} to false'
+        ok, out, proc = _act_on_process(
+            kwargs["app"],
+            lambda t: f'tell application "System Events" to set visible of process {t} to false',
         )
         return ToolResult(content=f"Hid {proc}." if ok else f"Error: {out}")
 

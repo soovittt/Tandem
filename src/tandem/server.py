@@ -31,11 +31,13 @@ logging.basicConfig(level=logging.INFO)  # surface tandem.* INFO logs (tool call
 @asynccontextmanager
 async def lifespan(_app: "FastAPI"):
     yield
-    # Release all cached agents (MCP subprocesses, memory handles) on shutdown.
+    # Release cached agents (memory handles) then the shared MCP servers on shutdown.
     if _state is not None:
         for cached in list(_state.sessions.values()):
             _close_agent(cached)
         _state.sessions.clear()
+        for integration in _state.mcp[1]:
+            _close_agent(integration)  # .close() duck-typed; releases the subprocess
 
 
 app = FastAPI(title="Tandem API", lifespan=lifespan)
@@ -75,6 +77,7 @@ class ApproveIn(BaseModel):
 @dataclass
 class _State:
     config: AppConfig
+    mcp: tuple  # (tools, integrations) — ONE set of MCP servers shared by all agents
     sessions: "OrderedDict[str, Agent]" = field(default_factory=OrderedDict)
 
 
@@ -99,7 +102,10 @@ def _get_state() -> _State:
     if _state is None:
         with _state_lock:
             if _state is None:  # double-checked under lock
-                _state = _State(config=AppConfig.from_env())
+                from tandem.mcp_servers import load_mcp_tools
+
+                # Spawn the MCP servers ONCE here; every session agent shares them.
+                _state = _State(config=AppConfig.from_env(), mcp=load_mcp_tools())
     return _state
 
 
@@ -115,8 +121,11 @@ def _agent_for(session_id: str) -> Agent:
         _broker.drop(old_id)
         _close_agent(old_agent)
     # /chat is the Mac personal AI (controls the local machine's apps). Consequential
-    # actions route through the approval broker, scoped to this session.
-    agent = build_mac_agent(state.config, approval=BrokeredApproval(session_id, _broker))
+    # actions route through the approval broker, scoped to this session. The MCP
+    # servers are shared (loaded once), so this is just memory + tool wiring now.
+    agent = build_mac_agent(
+        state.config, approval=BrokeredApproval(session_id, _broker), mcp=state.mcp
+    )
     state.sessions[session_id] = agent
     return agent
 

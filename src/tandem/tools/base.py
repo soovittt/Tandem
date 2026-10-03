@@ -50,18 +50,20 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._specs: list[dict[str, Any]] | None = None  # built once, reused each turn
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"Duplicate tool name: {tool.name!r}")
         self._tools[tool.name] = tool
+        self._specs = None  # invalidate the cached specs
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
     def specs(self) -> list[dict[str, Any]]:
-        """All tool definitions, to send to the model each turn."""
-        return [tool.spec() for tool in self._tools.values()]
-
-    def __len__(self) -> int:
-        return len(self._tools)
+        """All tool definitions, to send to the model each turn. Cached — the set
+        is fixed once the agent is built, so we don't rebuild it on every step."""
+        if self._specs is None:
+            self._specs = [tool.spec() for tool in self._tools.values()]
+        return self._specs

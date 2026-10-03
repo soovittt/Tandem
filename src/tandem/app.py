@@ -124,6 +124,7 @@ def build_mac_agent(
     *,
     approval: ApprovalPolicy | None = None,
     guardrails: Guardrails | None = None,
+    mcp: tuple[list[Tool], list] | None = None,
 ) -> Agent:
     """
     The Mac personal AI: Nemotron reasoning + native Mac app control + MCP tools.
@@ -133,13 +134,20 @@ def build_mac_agent(
       2. system control (frontmost / open / minimize / hide / shortcut) — always on
       3. MCP servers (apple-mcp for Apple apps, cua for any app) via TANDEM_MCP_SERVERS;
          native AppleScript app tools are a fallback only when MCP doesn't cover them.
+
+    `mcp`: optional pre-loaded (tools, integrations) so MANY session agents share one
+    set of MCP servers (the server loads them once at startup, avoiding a per-session
+    subprocess cold-start). If None, this agent loads and OWNS its own servers
+    (standalone use — CLI, tests — closes them on eviction).
     """
     config = config or AppConfig.from_env()
     pdir = config.data_dir / "mac"
     memory = _build_project_memory(config, 0, pdir)  # project 0 = personal Mac memory
 
+    owns_mcp = mcp is None
+    mcp_tools, mcp_integrations = mcp if mcp is not None else load_mcp_tools()
+
     extra: list[Tool] = list(mac_system_tools())
-    mcp_tools, mcp_integrations = load_mcp_tools()
     extra.extend(mcp_tools)
     # Native Apple-app tools only when no MCP server already covers those apps.
     if not any(t.name in _APPLE_APP_TOOLS for t in mcp_tools):
@@ -155,10 +163,12 @@ def build_mac_agent(
         extra_tools=extra,
         max_steps=8,
     )
-    # Release MCP subprocesses + the memory handle when this agent is evicted.
-    for integration in mcp_integrations:
-        agent.add_resource(integration)
-    agent.add_resource(memory)
+    agent.add_resource(memory)  # per-agent memory handle, released on eviction
+    # Only own (and close) MCP servers we loaded ourselves; shared ones belong to
+    # the caller (the server closes them once at shutdown).
+    if owns_mcp:
+        for integration in mcp_integrations:
+            agent.add_resource(integration)
     return agent
 
 

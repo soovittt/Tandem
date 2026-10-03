@@ -40,6 +40,12 @@ _log = logging.getLogger("tandem.agent")
 # 8B drift off its native tool-call format into ad-hoc text, so keep it low.
 _TOOL_TEMPERATURE = 0.3
 
+# Keep the prompt bounded: once a session exceeds _HISTORY_TRIM_AT user turns, drop
+# older turns down to _HISTORY_KEEP (preserving the system message + role
+# alternation). Trimming in chunks (not every turn) limits prefix-cache churn.
+_HISTORY_TRIM_AT = 16
+_HISTORY_KEEP = 12
+
 
 @dataclass
 class AgentResponse:
@@ -117,6 +123,8 @@ class Agent:
             block = "\n".join(f"- ({m.kind}) {m.content}" for m in memories)
             preamble.append(f"[Relevant memory]\n{block}")
         user_text = "\n\n".join(preamble + [user_text])
+
+        self._trim_history()  # bound the prompt before adding this turn
 
         # Checkpoint so a failed turn leaves the history exactly as it was — a
         # dangling user/assistant/tool message would break role alternation on
@@ -217,6 +225,19 @@ class Agent:
             return f"Tool {call.name!r} failed: {exc}", []
         _log.info("tool %s -> %s", call.name, (result.content or "")[:400])
         return result.content, result.sources
+
+    def _trim_history(self) -> None:
+        """Bound the conversation so prompts (and prefill cost) don't grow forever.
+
+        Keeps the system message + the last _HISTORY_KEEP user turns. Cutting at the
+        start of a user message preserves strict role alternation (the remaining
+        history after the system prompt always begins with a user turn).
+        """
+        user_idxs = [i for i, m in enumerate(self._history) if m.get("role") == "user"]
+        if len(user_idxs) <= _HISTORY_TRIM_AT:
+            return
+        cut_end = user_idxs[-_HISTORY_KEEP]
+        del self._history[1:cut_end]
 
     def _build_system_prompt(self, persona: str) -> str:
         parts: list[str] = []

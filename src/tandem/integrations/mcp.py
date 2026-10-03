@@ -58,7 +58,7 @@ class _StdioMCPServer:
     managers for its whole life; calls are dispatched over an asyncio.Queue.
     """
 
-    def __init__(self, command: list[str], *, connect_timeout: float = 60.0, call_timeout: float = 150.0) -> None:
+    def __init__(self, command: list[str], *, connect_timeout: float = 60.0, call_timeout: float = 45.0) -> None:
         self._call_timeout = call_timeout
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue | None = None
