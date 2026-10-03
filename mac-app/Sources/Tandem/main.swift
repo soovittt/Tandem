@@ -5,11 +5,11 @@ import Carbon
 final class StatusBarController: NSObject {
     private let item: NSStatusItem
     private let onOpen: () -> Void
-    private let onConnectWhatsApp: () -> Void
+    private let onOpenSettings: () -> Void
 
-    init(onOpen: @escaping () -> Void, onConnectWhatsApp: @escaping () -> Void) {
+    init(onOpen: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
         self.onOpen = onOpen
-        self.onConnectWhatsApp = onConnectWhatsApp
+        self.onOpenSettings = onOpenSettings
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         if let button = item.button {
@@ -19,21 +19,21 @@ final class StatusBarController: NSObject {
         let open = NSMenuItem(title: "Open Tandem  (⌥Space)", action: #selector(openCommandBar), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        let whatsapp = NSMenuItem(title: "Connect WhatsApp…", action: #selector(connectWhatsApp), keyEquivalent: "")
-        whatsapp.target = self
-        menu.addItem(whatsapp)
+        let settings = NSMenuItem(title: "Tandem Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tandem", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
     }
 
     @objc private func openCommandBar() { onOpen() }
-    @objc private func connectWhatsApp() { onConnectWhatsApp() }
+    @objc private func openSettings() { onOpenSettings() }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let commandBar = CommandBarController()
-    private let whatsapp = WhatsAppConnectController()
+    private let controlCenter = ControlCenterController()
     private var hotKey: HotKey?
     private var statusBar: StatusBarController?
 
@@ -42,8 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installEditMenu()  // enables ⌘C/⌘V/⌘X/⌘A/⌘Z in the command bar text field
         statusBar = StatusBarController(
             onOpen: { [weak self] in self?.commandBar.show() },
-            onConnectWhatsApp: { [weak self] in self?.whatsapp.show() }
+            onOpenSettings: { [weak self] in self?.controlCenter.show() }
         )
+        // First launch → open the Control Center as onboarding.
+        if !UserDefaults.standard.bool(forKey: "tandem.didOnboard") {
+            UserDefaults.standard.set(true, forKey: "tandem.didOnboard")
+            controlCenter.show()
+        }
         // ⌥Space toggles the command bar.
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             self?.commandBar.toggle()

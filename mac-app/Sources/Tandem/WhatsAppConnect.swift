@@ -92,29 +92,5 @@ struct WhatsAppConnectView: View {
     }
 }
 
-/// Owns the Connect WhatsApp window (shown from the menu bar or just-in-time).
-final class WhatsAppConnectController {
-    private var window: NSWindow?
-    private let model = WhatsAppModel()
-
-    func show() {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let view = WhatsAppConnectView(model: model, onClose: { [weak self] in self?.window?.close() })
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 380),
-            styleMask: [.titled, .closable],
-            backing: .buffered, defer: false
-        )
-        window.title = "Connect WhatsApp"
-        window.contentView = NSHostingView(rootView: view)
-        window.isReleasedWhenClosed = false
-        window.center()
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
+// (WhatsApp connecting now lives inside the Control Center's Integrations pane,
+// presented as a sheet — see ControlCenter.swift.)

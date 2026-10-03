@@ -191,6 +191,57 @@ def chat_stream(body: ChatRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.get("/integrations")
+def integrations() -> list[dict]:
+    """Everything the Control Center shows: connected core integrations + what's next."""
+    from tandem.mcp_servers import enabled_server_names
+
+    enabled = set(enabled_server_names())
+    wa = _whatsapp.status()
+    wa_status = "connected" if wa["connected"] else ("linking" if wa["qr"] else "disconnected")
+
+    items = [
+        {"id": "system", "name": "Mac Control", "icon": "macwindow",
+         "desc": "Open, switch, minimize & hide apps; run Shortcuts", "status": "connected"},
+        {"id": "apple", "name": "Apple Apps", "icon": "apple.logo",
+         "desc": "Messages, Notes, Mail, Reminders, Calendar, Contacts, Maps",
+         "status": "connected" if "apple-mcp" in enabled else "available"},
+        {"id": "whatsapp", "name": "WhatsApp", "icon": "bubble.left.and.bubble.right.fill",
+         "desc": "Read & send chats and groups", "status": wa_status},
+        {"id": "memory", "name": "Memory", "icon": "brain",
+         "desc": "Remembers facts about you across sessions", "status": "connected"},
+    ]
+    for sid, name, icon, desc in [
+        ("slack", "Slack", "number", "Channels & DMs"),
+        ("gmail", "Gmail", "envelope.fill", "Email"),
+        ("notion", "Notion", "doc.text.fill", "Docs & databases"),
+        ("drive", "Google Drive", "folder.fill", "Files"),
+    ]:
+        items.append({"id": sid, "name": name, "icon": icon, "desc": desc, "status": "coming_soon"})
+    return items
+
+
+@app.get("/model")
+def model_info() -> dict:
+    """The serving model + a live reachability check, for the Model pane."""
+    cfg = AppConfig.from_env()
+    reachable = False
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(cfg.llm.base_url.rstrip("/") + "/models", timeout=4) as r:
+            reachable = r.status == 200
+    except Exception:
+        reachable = False
+    return {
+        "model": cfg.llm.model,
+        "base_url": cfg.llm.base_url,
+        "reachable": reachable,
+        "reasoning": cfg.reasoning,
+        "tool_mode": cfg.tool_mode,
+    }
+
+
 @app.get("/whatsapp/status")
 def whatsapp_status() -> dict:
     """{running, connected, qr}. The app polls this to drive Connect WhatsApp."""

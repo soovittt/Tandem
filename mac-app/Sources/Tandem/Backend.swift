@@ -93,6 +93,14 @@ final class Backend {
         }.resume()
     }
 
+    /// Generic GET → decode JSON (used by the Control Center panes). Main-actor callback.
+    func getJSON<T: Decodable>(_ path: String, as type: T.Type, completion: @escaping (T?) -> Void) {
+        URLSession.shared.dataTask(with: base.appendingPathComponent(path)) { data, _, _ in
+            let decoded = data.flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+            DispatchQueue.main.async { completion(decoded) }
+        }.resume()
+    }
+
     // --- WhatsApp connection (in-app QR linking) ---------------------------
     func whatsappStatus(completion: @escaping ([String: Any]?) -> Void) {
         let url = base.appendingPathComponent("whatsapp/status")
