@@ -30,5 +30,7 @@ mac-app/AppIcon.iconset/
 .DS_Store
 .reducer/
 
-# Vendored third-party MCP servers (clone separately)
-vendor/
+# Vendored WhatsApp MCP (adapted from lharries/whatsapp-mcp) — track source, not:
+vendor/whatsapp-mcp/whatsapp-bridge/whatsapp-bridge
+vendor/whatsapp-mcp/whatsapp-bridge/store/
+vendor/whatsapp-mcp/whatsapp-mcp-server/.venv/

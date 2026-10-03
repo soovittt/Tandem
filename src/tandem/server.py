@@ -26,20 +26,26 @@ from tandem.agent.agent import Agent
 from tandem.app import build_mac_agent
 from tandem.agent.approval import ApprovalBroker, BrokeredApproval
 from tandem.config import AppConfig
+from tandem.whatsapp_bridge import WhatsAppBridge
 
 logging.basicConfig(level=logging.INFO)  # surface tandem.* INFO logs (tool calls, errors)
 
 
 @asynccontextmanager
 async def lifespan(_app: "FastAPI"):
+    # Reconnect a previously-linked WhatsApp bridge on boot (non-blocking) so WhatsApp
+    # just works after a restart; first-time linking starts it via /whatsapp/connect.
+    if _whatsapp.has_session():
+        threading.Thread(target=_whatsapp.ensure_running, daemon=True).start()
     yield
-    # Release cached agents (memory handles) then the shared MCP servers on shutdown.
+    # Release cached agents (memory handles), the shared MCP servers, and the bridge.
     if _state is not None:
         for cached in list(_state.sessions.values()):
             _close_agent(cached)
         _state.sessions.clear()
         for integration in _state.mcp[1]:
             _close_agent(integration)  # .close() duck-typed; releases the subprocess
+    _whatsapp.stop()
 
 
 app = FastAPI(title="Tandem API", lifespan=lifespan)
@@ -86,6 +92,7 @@ class _State:
 _state: _State | None = None
 _state_lock = threading.Lock()
 _broker = ApprovalBroker()  # mediates human approval of consequential tool calls
+_whatsapp = WhatsAppBridge()  # manages the local WhatsApp bridge process + QR status
 _MAX_SESSIONS = 8  # cap cached agents (each owns MCP subprocesses) — LRU-evict
 
 
@@ -182,6 +189,18 @@ def chat_stream(body: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps(done)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/whatsapp/status")
+def whatsapp_status() -> dict:
+    """{running, connected, qr}. The app polls this to drive Connect WhatsApp."""
+    return _whatsapp.status()
+
+
+@app.post("/whatsapp/connect")
+def whatsapp_connect() -> dict:
+    """Start the bridge (if needed) so a QR appears / it reconnects. Returns status."""
+    return _whatsapp.ensure_running()
 
 
 @app.get("/pending/{session_id}")

@@ -5,9 +5,11 @@ import Carbon
 final class StatusBarController: NSObject {
     private let item: NSStatusItem
     private let onOpen: () -> Void
+    private let onConnectWhatsApp: () -> Void
 
-    init(onOpen: @escaping () -> Void) {
+    init(onOpen: @escaping () -> Void, onConnectWhatsApp: @escaping () -> Void) {
         self.onOpen = onOpen
+        self.onConnectWhatsApp = onConnectWhatsApp
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         if let button = item.button {
@@ -17,23 +19,31 @@ final class StatusBarController: NSObject {
         let open = NSMenuItem(title: "Open Tandem  (⌥Space)", action: #selector(openCommandBar), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let whatsapp = NSMenuItem(title: "Connect WhatsApp…", action: #selector(connectWhatsApp), keyEquivalent: "")
+        whatsapp.target = self
+        menu.addItem(whatsapp)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tandem", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
     }
 
     @objc private func openCommandBar() { onOpen() }
+    @objc private func connectWhatsApp() { onConnectWhatsApp() }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let commandBar = CommandBarController()
+    private let whatsapp = WhatsAppConnectController()
     private var hotKey: HotKey?
     private var statusBar: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)  // menu-bar only, no dock icon
         installEditMenu()  // enables ⌘C/⌘V/⌘X/⌘A/⌘Z in the command bar text field
-        statusBar = StatusBarController { [weak self] in self?.commandBar.show() }
+        statusBar = StatusBarController(
+            onOpen: { [weak self] in self?.commandBar.show() },
+            onConnectWhatsApp: { [weak self] in self?.whatsapp.show() }
+        )
         // ⌥Space toggles the command bar.
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             self?.commandBar.toggle()

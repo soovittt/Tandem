@@ -93,6 +93,25 @@ final class Backend {
         }.resume()
     }
 
+    // --- WhatsApp connection (in-app QR linking) ---------------------------
+    func whatsappStatus(completion: @escaping ([String: Any]?) -> Void) {
+        let url = base.appendingPathComponent("whatsapp/status")
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            DispatchQueue.main.async { completion(obj) }
+        }.resume()
+    }
+
+    func whatsappConnect(completion: @escaping ([String: Any]?) -> Void) {
+        var request = URLRequest(url: base.appendingPathComponent("whatsapp/connect"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            let obj = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            DispatchQueue.main.async { completion(obj) }
+        }.resume()
+    }
+
     private func startPolling(onPending: @escaping (PendingInfo) -> Void) {
         polling = true
         var lastShown: PendingInfo?
