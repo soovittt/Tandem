@@ -10,6 +10,7 @@ Run it:  uv run uvicorn tandem.server:app --reload
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import uuid
@@ -18,6 +19,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from tandem.agent.agent import Agent
@@ -159,6 +161,27 @@ def chat(body: ChatRequest) -> ChatResponse:
         steps=result.steps,
         sources=[SourceModel(title=s.title, url=s.url) for s in result.sources],
     )
+
+
+@app.post("/chat/stream")
+def chat_stream(body: ChatRequest) -> StreamingResponse:
+    """Same turn as /chat, streamed as Server-Sent Events: a `session` event, then
+    `token`/`tool` events as the agent works, and a final `done` event with the
+    authoritative answer. Approval still flows over /pending + /approve meanwhile."""
+    session_id = body.session_id or uuid.uuid4().hex
+
+    def events():
+        yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+        try:
+            for event in _agent_for(session_id).stream(body.message, images=body.images):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception:
+            logging.getLogger("tandem.server").exception("stream failed for %s", session_id)
+            done = {"type": "done", "text": "Sorry — I hit an error handling that one.",
+                    "steps": 0, "sources": []}
+            yield f"data: {json.dumps(done)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.get("/pending/{session_id}")

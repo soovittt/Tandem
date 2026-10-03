@@ -8,6 +8,7 @@ above this line changes.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -25,6 +26,15 @@ class ChatResult:
     completion_tokens: int       # DECODE cost
 
 
+class StreamingHandle(Protocol):
+    """A streaming completion: iterate for content-token deltas, then read `result`
+    (populated once the iterator is exhausted)."""
+
+    result: ChatResult | None
+
+    def __iter__(self) -> Iterator[str]: ...
+
+
 class LLMBackend(Protocol):
     """Anything that can turn a message list (+ optional tools) into a reply."""
 
@@ -36,3 +46,12 @@ class LLMBackend(Protocol):
         temperature: float = 0.7,
         max_tokens: int = 1024,
     ) -> ChatResult: ...
+
+    def chat_stream(
+        self,
+        messages: list[WireMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> StreamingHandle: ...

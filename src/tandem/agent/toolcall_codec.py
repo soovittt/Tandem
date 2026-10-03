@@ -4,9 +4,11 @@ The tool-call wire codec.
 ONE place that knows how tool calls look as *text*, so the Agent's loops stay about
 orchestration, not string surgery. It:
   - renders the available tools + call format into a system prompt (prompt mode),
-  - parses the `<toolcall>{json}</toolcall>` blocks we instruct back into ToolCalls,
-  - salvages the ad-hoc text formats the model drifts into under native tool calling
-    (e.g. `<TOOLCALL>[name, k="v"]`), so an action still runs, and
+  - decodes the tool calls the model emits as text — across every format it uses:
+    the `<toolcall>{json}</toolcall>` we instruct (prompt mode), the
+    `<TOOLCALL>[{json}, ...]` JSON array it streams (vLLM doesn't run its tool
+    parser while streaming), and the ad-hoc `<TOOLCALL>[name, k="v"]` bracket form
+    it drifts into — so an action still runs, and
   - cleans a user-facing answer of reasoning traces and stray tool-call tags.
 """
 
@@ -22,12 +24,11 @@ from tandem.domain.message import ToolCall
 class ToolCallCodec:
     """Encode/decode the model's tool-call text format(s)."""
 
-    # Strict JSON form we instruct in prompt mode: <toolcall>{"name":..,"arguments":..}</toolcall>
-    _JSON_CALL_RE = re.compile(r"<tool_?call>\s*(\{.*?\})\s*</tool_?call>", re.DOTALL | re.IGNORECASE)
-    # Any tool-call tag (JSON or ad-hoc, closed or dangling) — for stripping from answers.
-    _STRIP_CALL_RE = re.compile(r"<\s*tool_?call\s*>.*?(?:<\s*/\s*tool_?call\s*>|$)", re.DOTALL | re.IGNORECASE)
-    # Tag + its inner text — for salvaging the bracket form.
+    # A tool-call tag + its inner text (closed or dangling), for decoding.
     _CALL_TAG_RE = re.compile(r"<\s*tool_?call\s*>(.*?)(?:<\s*/\s*tool_?call\s*>|$)", re.DOTALL | re.IGNORECASE)
+    # The whole tag, for stripping from a user-facing answer.
+    _STRIP_CALL_RE = re.compile(r"<\s*tool_?call\s*>.*?(?:<\s*/\s*tool_?call\s*>|$)", re.DOTALL | re.IGNORECASE)
+    # Ad-hoc pythonic form inside the tag: [name, key="value", ...]
     _BRACKET_CALL_RE = re.compile(r"\[\s*([a-zA-Z_]\w*)\s*(.*?)\]", re.DOTALL)
     _KWARG_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
     # Reasoning traces from "detailed thinking on" models.
@@ -53,36 +54,37 @@ class ToolCallCodec:
             lines.append(f"- {fn['name']}({args}): {fn['description']}")
         return "\n".join(lines)
 
-    def parse(self, text: str) -> list[ToolCall]:
-        """Extract the `<toolcall>{json}</toolcall>` blocks (the prompt-mode format)."""
-        calls: list[ToolCall] = []
-        for i, match in enumerate(self._JSON_CALL_RE.finditer(text or "")):
-            try:
-                obj = json.loads(match.group(1))
-            except json.JSONDecodeError:
-                continue
-            name = obj.get("name")
-            if not name:
-                continue  # unnamed call — can't dispatch safely
-            calls.append(ToolCall(id=f"call_{i}", name=name, arguments=obj.get("arguments") or {}))
-        return calls
-
-    def salvage(self, text: str) -> list[ToolCall]:
-        """Recover tool calls the model emitted as TEXT instead of native calls —
-        both the JSON form and the ad-hoc bracket form `<TOOLCALL>[name, k="v", ...]`."""
-        if not text:
-            return []
-        json_calls = self.parse(text)
-        if json_calls:
-            return json_calls
+    def decode(self, text: str) -> list[ToolCall]:
+        """Extract every tool call the model emitted as text, whatever the format."""
         out: list[ToolCall] = []
-        for tag in self._CALL_TAG_RE.finditer(text):
-            bracket = self._BRACKET_CALL_RE.search(tag.group(1))
-            if not bracket:
-                continue
-            args = dict(self._KWARG_RE.findall(bracket.group(2)))
-            out.append(ToolCall(id=f"salvaged_{len(out)}", name=bracket.group(1), arguments=args))
+        for tag in self._CALL_TAG_RE.finditer(text or ""):
+            out.extend(self._calls_from_tag(tag.group(1), len(out)))
         return out
+
+    def _calls_from_tag(self, inner: str, start: int) -> list[ToolCall]:
+        """Parse one <toolcall> tag's inner text into ToolCalls. `start` seeds ids."""
+        inner = inner.strip()
+        # JSON form — a single {name, arguments} object or a [list] of them.
+        try:
+            data: Any = json.loads(inner)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            data = [data]
+        if isinstance(data, list):
+            calls = [
+                ToolCall(id=f"call_{start + i}", name=obj["name"], arguments=obj.get("arguments") or {})
+                for i, obj in enumerate(data)
+                if isinstance(obj, dict) and obj.get("name")
+            ]
+            if calls:
+                return calls
+        # Ad-hoc pythonic bracket form: [name, key="value", ...]
+        bracket = self._BRACKET_CALL_RE.search(inner)
+        if bracket:
+            args = dict(self._KWARG_RE.findall(bracket.group(2)))
+            return [ToolCall(id=f"call_{start}", name=bracket.group(1), arguments=args)]
+        return []
 
     def clean(self, text: str) -> str:
         """Strip reasoning traces (<think>..) and any tool-call tags from a final,

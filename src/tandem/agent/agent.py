@@ -17,6 +17,7 @@ run tools (guardrail + approval) → feed results back → repeat, capped by max
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -99,19 +100,54 @@ class Agent:
         self._resources.clear()
 
     def send(self, user_text: str, *, images: list[str] | None = None) -> AgentResponse:
+        ok, user_text = self._screen_input(user_text)
+        if not ok:
+            return AgentResponse(text=user_text, steps=0)  # user_text holds the refusal
+        checkpoint = self._open_turn(user_text, images)
+        try:
+            return self._loop_prompt() if self._tool_mode == "prompt" else self._loop_native()
+        except Exception:
+            del self._history[checkpoint:]
+            raise
+
+    def stream(self, user_text: str, *, images: list[str] | None = None) -> Iterator[dict[str, Any]]:
+        """Run the turn, yielding events as it goes: {"type":"token","text":..} for
+        the answer streaming live, {"type":"tool","name":..} per tool run, and a
+        final {"type":"done","text":..,"steps":..,"sources":[..]} with the
+        authoritative cleaned answer. Prompt mode has no token stream (just done)."""
+        if self._tool_mode == "prompt":
+            resp = self.send(user_text, images=images)
+            yield self._done_event(resp.text, resp.steps, resp.sources)
+            return
+        ok, user_text = self._screen_input(user_text)
+        if not ok:
+            yield self._done_event(user_text, 0, [])
+            return
+        checkpoint = self._open_turn(user_text, images)
+        try:
+            yield from self._loop_stream()
+        except Exception:
+            del self._history[checkpoint:]
+            _log.exception("stream turn failed")
+            yield self._done_event("Sorry — I hit an error handling that one.", 0, [])
+
+    # -- per-turn setup (shared by send + stream) ----------------------------
+    def _screen_input(self, user_text: str) -> tuple[bool, str]:
+        """Input guardrails + fold current date/time and recalled memory into the
+        user turn. Returns (ok, text); on a blocked input ok=False and text is the
+        refusal message."""
         verdict = self._guardrails.run_input(user_text)
         if not verdict.allowed:
-            return AgentResponse(text=f"I can't help with that: {verdict.reason}", steps=0)
+            return False, f"I can't help with that: {verdict.reason}"
         if verdict.text is not None:
             user_text = verdict.text
+        return True, self._fold_context(user_text)
 
-        # Fold recalled memory INTO the user turn (not a separate mid-prompt system
-        # message) so everything before it stays byte-identical turn-to-turn and
-        # vLLM's prefix cache is reused. History is strictly append-only.
-        # The model's training is frozen in the past, so it has no idea what day it
-        # is and will invent dates (e.g. schedule "today" in 2023). Tell it the real
-        # current date/time every turn so it resolves "today/tomorrow/this afternoon"
-        # correctly. Folded into the user turn to keep the system-prompt prefix stable.
+    def _fold_context(self, user_text: str) -> str:
+        """Prefix the user turn with the real current date/time (the model's training
+        is frozen in the past, so it invents dates otherwise) + any recalled memory.
+        Folded INTO the user turn so the system-prompt prefix stays byte-stable for
+        vLLM's KV-cache reuse; history is strictly append-only."""
         now = datetime.now().astimezone()
         preamble = [
             "Current date and time: "
@@ -122,25 +158,26 @@ class Agent:
         if memories:
             block = "\n".join(f"- ({m.kind}) {m.content}" for m in memories)
             preamble.append(f"[Relevant memory]\n{block}")
-        user_text = "\n\n".join(preamble + [user_text])
+        return "\n\n".join(preamble + [user_text])
 
-        self._trim_history()  # bound the prompt before adding this turn
-
-        # Checkpoint so a failed turn leaves the history exactly as it was — a
-        # dangling user/assistant/tool message would break role alternation on
-        # the next turn too.
+    def _open_turn(self, user_text: str, images: list[str] | None) -> int:
+        """Trim, then append the user turn. Returns a checkpoint to roll back to if
+        the turn fails — a dangling user/assistant/tool message would break role
+        alternation on the next turn too."""
+        self._trim_history()
         checkpoint = len(self._history)
-        if images:
-            self._history.append(msg.user_with_images(user_text, images))
-        else:
-            self._history.append(msg.user(user_text))
-        try:
-            if self._tool_mode == "prompt":
-                return self._loop_prompt()
-            return self._loop_native()
-        except Exception:
-            del self._history[checkpoint:]
-            raise
+        self._history.append(
+            msg.user_with_images(user_text, images) if images else msg.user(user_text)
+        )
+        return checkpoint
+
+    def _done_event(self, text: str, steps: int, sources: list[Source]) -> dict[str, Any]:
+        return {
+            "type": "done",
+            "text": text,
+            "steps": steps,
+            "sources": [{"title": s.title, "url": s.url} for s in sources],
+        }
 
     # -- native tool-calling loop --------------------------------------------
     def _loop_native(self) -> AgentResponse:
@@ -156,7 +193,7 @@ class Agent:
                 # and emits tool calls as TEXT (`<TOOLCALL>[name, k="v"]`), which the
                 # server parser misses. Salvage those so the action still runs; feed
                 # results back as a user turn (no tool role after a plain assistant).
-                salvaged = self._codec.salvage(result.text)
+                salvaged = self._codec.decode(result.text)
                 if salvaged:
                     _log.info("salvaged %d text tool-call(s) from drifted output", len(salvaged))
                     self._history.append(msg.assistant_text(result.text))
@@ -186,7 +223,7 @@ class Agent:
             result = self._llm.chat(self._history, temperature=_TOOL_TEMPERATURE)  # no native tools
             last_text = result.text
             self._history.append(msg.assistant_text(result.text))
-            calls = self._codec.parse(result.text)
+            calls = self._codec.decode(result.text)
             if not calls:
                 return self._finalize(result.text, sources, step)
             for call in calls:
@@ -195,6 +232,49 @@ class Agent:
                 # Feed the result back as a user turn (no native tool role here).
                 self._history.append(msg.user(f"[tool result: {call.name}]\n{content}"))
         return self._finalize(last_text or "(stopped: step limit)", sources, self._max_steps)
+
+    # -- streaming native loop (yields events) -------------------------------
+    def _loop_stream(self) -> Iterator[dict[str, Any]]:
+        sources: list[Source] = []
+        last_text = ""
+        for step in range(1, self._max_steps + 1):
+            gate = StreamGate()  # hides <think>/<toolcall> drift from the live stream
+            completion = self._llm.chat_stream(
+                self._history, tools=self._tools.specs() or None, temperature=_TOOL_TEMPERATURE
+            )
+            for delta in completion:
+                shown = gate.feed(delta)
+                if shown:
+                    yield {"type": "token", "text": shown}
+            tail = gate.flush()
+            if tail:
+                yield {"type": "token", "text": tail}
+
+            result = completion.result
+            last_text = result.text
+            if not result.tool_calls:
+                salvaged = self._codec.decode(result.text)
+                if salvaged:  # model emitted a tool call as text; the gate hid it
+                    _log.info("salvaged %d text tool-call(s) from drifted output", len(salvaged))
+                    self._history.append(msg.assistant_text(result.text))
+                    for call in salvaged:
+                        yield {"type": "tool", "name": call.name}
+                        content, srcs = self._run_tool_call(call)
+                        sources.extend(srcs)
+                        self._history.append(msg.user(f"[tool result: {call.name}]\n{content}"))
+                    continue
+                self._history.append(result.assistant_message)
+                resp = self._finalize(result.text, sources, step)
+                yield self._done_event(resp.text, resp.steps, resp.sources)
+                return
+            for call in result.tool_calls:
+                self._history.append(msg.assistant_tool_call(call))
+                yield {"type": "tool", "name": call.name}
+                content, srcs = self._run_tool_call(call)
+                sources.extend(srcs)
+                self._history.append(msg.tool_result(call.id, content))
+        resp = self._finalize(last_text or "(stopped: step limit)", sources, self._max_steps)
+        yield self._done_event(resp.text, resp.steps, resp.sources)
 
     # -- shared internals ----------------------------------------------------
     def _finalize(self, text: str, sources: list[Source], steps: int) -> AgentResponse:
@@ -265,3 +345,44 @@ _OPERATING_RULES = (
     "- Prefer using a tool over guessing. Say so when evidence is insufficient.\n"
     "- When you work out a repeatable procedure, save it as a skill."
 )
+
+
+class StreamGate:
+    """Holds back the opening characters of streamed content so a drifted tool-call
+    (`<TOOLCALL>[...]`) or a <think> block never flashes before it's recognized.
+    Once the content is clearly plain text it flushes and passes tokens straight
+    through. (The final answer in the `done` event is authoritative regardless.)"""
+
+    _MARKERS = ("<think", "<tool")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._passthrough = False
+        self._suppressed = False
+
+    def feed(self, delta: str) -> str:
+        """Return the portion of `delta` that's safe to show now (may be empty)."""
+        if self._suppressed:
+            return ""
+        if self._passthrough:
+            return delta
+        self._buffer += delta
+        stripped = self._buffer.lstrip().lower()
+        if not stripped:
+            return ""  # only whitespace so far — keep buffering
+        if stripped.startswith(self._MARKERS):
+            self._suppressed = True  # it's a reasoning/tool-call tag; hide the whole step
+            self._buffer = ""
+            return ""
+        if stripped[0] == "<" and any(m.startswith(stripped) for m in self._MARKERS):
+            return ""  # could still become a marker (e.g. "<", "<t", "<thi") — wait
+        return self._open()
+
+    def flush(self) -> str:
+        """Emit whatever's safely buffered once the stream ends."""
+        return "" if self._suppressed else self._open()
+
+    def _open(self) -> str:
+        self._passthrough = True
+        out, self._buffer = self._buffer, ""
+        return out
