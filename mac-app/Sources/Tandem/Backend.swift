@@ -1,11 +1,5 @@
 import Foundation
 
-struct ChatResponse: Decodable {
-    let session_id: String
-    let text: String
-    let steps: Int
-}
-
 /// A consequential action the agent is waiting for the user to approve.
 struct PendingInfo: Decodable, Equatable {
     let id: String
@@ -13,8 +7,15 @@ struct PendingInfo: Decodable, Equatable {
     let description: String
 }
 
-/// Client to the local Tandem agent backend (:8000). Owns a stable session id so
-/// it can poll /pending for approvals while the long /chat request is in flight.
+/// One event from the streaming turn.
+enum StreamEvent {
+    case token(String)         // a chunk of the answer, as it generates
+    case tool(String)          // a tool just started running
+    case done(String, Int)     // final authoritative answer + step count
+}
+
+/// Client to the local Tandem agent backend (:8000). Streams the turn over SSE and
+/// polls /pending for approvals concurrently while the stream is in flight.
 final class Backend {
     static let shared = Backend()
     private let base = URL(string: "http://127.0.0.1:8000")!
@@ -23,37 +24,56 @@ final class Backend {
 
     func newSession() { sessionId = UUID().uuidString }
 
-    /// Send a message. `onPending` fires (on main) when the agent needs approval.
-    func send(
+    /// Stream a message. `onEvent` fires per token/tool/done, `onPending` when the
+    /// agent needs approval; `completion` ends the turn. All callbacks on the main actor.
+    func stream(
         _ message: String,
+        onEvent: @escaping (StreamEvent) -> Void,
         onPending: @escaping (PendingInfo) -> Void,
-        completion: @escaping (Result<String, Error>) -> Void
+        completion: @escaping (Result<Void, Error>) -> Void
     ) {
         startPolling(onPending: onPending)
 
-        var request = URLRequest(url: base.appendingPathComponent("chat"))
+        var request = URLRequest(url: base.appendingPathComponent("chat/stream"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 300
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "message": message, "session_id": sessionId,
         ])
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
-            self?.polling = false
-            if let error { completion(.failure(error)); return }
-            guard let data else {
-                completion(.failure(Self.err("No response — is the backend running on :8000?")))
-                return
-            }
+        Task {
             do {
-                let decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
-                completion(.success(decoded.text))
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw Self.err("Backend returned an error — is it running on :8000?")
+                }
+                for try await line in bytes.lines {
+                    guard line.hasPrefix("data:"),
+                          let event = Self.parse(line.dropFirst(5)) else { continue }
+                    await MainActor.run { onEvent(event) }
+                }
+                polling = false
+                await MainActor.run { completion(.success(())) }
             } catch {
-                let raw = String(data: data, encoding: .utf8) ?? "?"
-                completion(.failure(Self.err("Bad response: \(raw.prefix(180))")))
+                polling = false
+                await MainActor.run { completion(.failure(error)) }
             }
-        }.resume()
+        }
+    }
+
+    private static func parse(_ payload: Substring) -> StreamEvent? {
+        let trimmed = payload.trimmingCharacters(in: .whitespaces)
+        guard let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String else { return nil }
+        switch type {
+        case "token": return .token(obj["text"] as? String ?? "")
+        case "tool": return .tool(obj["name"] as? String ?? "")
+        case "done": return .done(obj["text"] as? String ?? "", obj["steps"] as? Int ?? 0)
+        default: return nil  // "session" and anything else: ignore
+        }
     }
 
     /// Approve or deny a SPECIFIC pending action (by id). completion(true) only if

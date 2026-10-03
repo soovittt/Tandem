@@ -22,25 +22,53 @@ final class ChatModel: ObservableObject {
         messages.append(Message(role: .user, text: text))
         busy = true
 
-        Backend.shared.send(
+        // The assistant bubble appears on the first token and fills as they arrive;
+        // the `done` event replaces it with the authoritative (cleaned) answer.
+        var assistantId: UUID?
+        var streamed = ""
+
+        Backend.shared.stream(
             text,
+            onEvent: { [weak self] event in
+                guard let self else { return }
+                switch event {
+                case .token(let chunk):
+                    streamed += chunk
+                    if let id = assistantId {
+                        self.setText(id, streamed)
+                    } else {
+                        let bubble = Message(role: .assistant, text: streamed)
+                        assistantId = bubble.id
+                        self.messages.append(bubble)
+                    }
+                case .tool:
+                    break  // a tool is running; the thinking indicator covers it
+                case .done(let finalText, _):
+                    if let id = assistantId {
+                        self.setText(id, finalText)
+                    } else {
+                        self.messages.append(Message(role: .assistant, text: finalText))
+                    }
+                }
+            },
             onPending: { [weak self] pending in
                 self?.pendingApproval = pending
             },
             completion: { [weak self] result in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.busy = false
-                    self.pendingApproval = nil
-                    switch result {
-                    case .success(let reply):
-                        self.messages.append(Message(role: .assistant, text: reply))
-                    case .failure(let error):
-                        self.messages.append(Message(role: .assistant, text: "⚠️ \(error.localizedDescription)"))
-                    }
+                guard let self else { return }
+                self.busy = false
+                self.pendingApproval = nil
+                if case .failure(let error) = result, assistantId == nil {
+                    self.messages.append(Message(role: .assistant, text: "⚠️ \(error.localizedDescription)"))
                 }
             }
         )
+    }
+
+    private func setText(_ id: UUID, _ text: String) {
+        if let i = messages.firstIndex(where: { $0.id == id }) {
+            messages[i].text = text
+        }
     }
 
     func approve() { resolve(approved: true) }
