@@ -1,0 +1,5 @@
+{
+  "name": "Summary",
+  "description": "Summary of notes",
+  "instructions": "Read latest note and rewrite it as a bulleted summary in a new note called 'Summary'"
+}

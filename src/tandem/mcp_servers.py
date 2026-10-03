@@ -1,0 +1,87 @@
+"""
+Declarative registry of MCP servers the Mac agent can load.
+
+This is the "connect to any amount of apps" layer: each MCP server contributes
+its tools to the agent (universal accessibility control, Apple apps, files, and
+later Slack/GitHub/Notion/etc.). Enable them by name via the TANDEM_MCP_SERVERS
+env var (comma-separated), e.g. TANDEM_MCP_SERVERS=open-computer-use,apple-mcp.
+
+Adding a server = one entry here. Nothing else in the app changes — MCPIntegration
+wraps each server's tools into our Tool interface. Servers that aren't installed
+(or the optional `mcp` package) are skipped with a warning, never crash the agent.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from tandem.integrations.mcp import MCPIntegration
+from tandem.tools.base import Tool
+
+
+@dataclass(frozen=True)
+class McpServerConfig:
+    name: str
+    command: list[str]
+    note: str = ""
+    # Tool names that can perform consequential writes → require user approval.
+    approval_tools: tuple[str, ...] = ()
+
+
+# The catalog. These are launched over stdio; install each per its own README.
+MCP_SERVERS: list[McpServerConfig] = [
+    McpServerConfig(
+        name="open-computer-use",
+        command=["npx", "-y", "@qwen-code/open-computer-use", "mcp"],
+        note="Universal Mac control via Accessibility + OCR (any app). Needs Accessibility + Screen Recording grants.",
+    ),
+    McpServerConfig(
+        name="apple-mcp",
+        command=["/opt/homebrew/bin/bunx", "apple-mcp@latest"],
+        note="Apple apps: Messages, Notes, Mail, Reminders, Calendar, Contacts, Maps.",
+        # These tools can send/create/modify → gate behind approval.
+        approval_tools=("messages", "mail", "notes", "reminders", "calendar"),
+    ),
+    McpServerConfig(
+        name="filesystem",
+        command=["npx", "-y", "@modelcontextprotocol/server-filesystem", str(Path.home())],
+        note="Read/write files under the home directory.",
+    ),
+]
+
+_BY_NAME = {s.name: s for s in MCP_SERVERS}
+
+
+def enabled_server_names() -> list[str]:
+    raw = os.getenv("TANDEM_MCP_SERVERS", "").strip()
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+def load_mcp_tools(names: list[str] | None = None) -> tuple[list[Tool], list[MCPIntegration]]:
+    """Connect to the enabled MCP servers; return (all tools, the integrations).
+
+    The integrations are returned so the caller can close() them (releasing the
+    server subprocesses) when the owning agent is evicted.
+    """
+    wanted = names if names is not None else enabled_server_names()
+    tools: list[Tool] = []
+    integrations: list[MCPIntegration] = []
+    for name in wanted:
+        config = _BY_NAME.get(name)
+        if config is None:
+            print(f"[mcp] unknown server '{name}' — skipping")
+            continue
+        try:
+            integration = MCPIntegration.from_stdio(config.command)
+            server_tools = integration.tools()
+            for tool in server_tools:
+                if tool.name in config.approval_tools:
+                    tool.requires_approval = True  # consequential → needs user approval
+            tools.extend(server_tools)
+            integrations.append(integration)
+            print(f"[mcp] loaded {len(server_tools)} tools from '{name}'")
+        except Exception as exc:  # never let a missing server break the agent
+            print(f"[mcp] could not load '{name}': {exc}")
+    return tools, integrations

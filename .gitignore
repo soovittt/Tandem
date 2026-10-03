@@ -1,0 +1,31 @@
+# Secrets / credentials — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime data / databases
+.tandem/
+*.db
+
+# Node / web build
+node_modules/
+web/.next/
+web/out/
+
+# Swift / macOS app build artifacts
+mac-app/.build/
+mac-app/Tandem.app/
+mac-app/AppIcon.iconset/
+
+# macOS / tooling
+.DS_Store
+.reducer/
