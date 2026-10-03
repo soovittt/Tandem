@@ -200,16 +200,14 @@ def integrations() -> list[dict]:
     wa = _whatsapp.status()
     wa_status = "connected" if wa["connected"] else ("linking" if wa["qr"] else "disconnected")
 
+    # Only EXTERNAL things you actually connect. Built-ins (Mac control, memory,
+    # skills) are always-on and aren't listed as connectable integrations.
     items = [
-        {"id": "system", "name": "Mac Control", "icon": "macwindow",
-         "desc": "Open, switch, minimize & hide apps; run Shortcuts", "status": "connected"},
         {"id": "apple", "name": "Apple Apps", "icon": "apple.logo",
          "desc": "Messages, Notes, Mail, Reminders, Calendar, Contacts, Maps",
          "status": "connected" if "apple-mcp" in enabled else "available"},
         {"id": "whatsapp", "name": "WhatsApp", "icon": "bubble.left.and.bubble.right.fill",
          "desc": "Read & send chats and groups", "status": wa_status},
-        {"id": "memory", "name": "Memory", "icon": "brain",
-         "desc": "Remembers facts about you across sessions", "status": "connected"},
     ]
     for sid, name, icon, desc in [
         ("slack", "Slack", "number", "Channels & DMs"),

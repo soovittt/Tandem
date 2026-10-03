@@ -147,6 +147,12 @@ private struct IntegrationsPane: View {
                     IntegrationRow(item: item) { if item.id == "whatsapp" { showWhatsApp = true } }
                 }
             }
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.fill").font(.system(size: 10)).foregroundStyle(.green)
+                Text("Always on: Mac control · Memory · Skills")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+            .padding(.leading, 2).padding(.top, 2)
             if !soon.isEmpty {
                 Text("COMING SOON").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.tertiary).padding(.top, 6)
