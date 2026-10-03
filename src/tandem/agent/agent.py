@@ -85,6 +85,17 @@ class Agent:
         # Closable resources (MCP servers, DB connections) released on close().
         self._resources: list[Any] = []
 
+    def seed_history(self, turns: list[dict[str, str]]) -> None:
+        """Restore prior conversation turns (plain user/assistant text) after the
+        system prompt, so the model keeps context across restarts. Call once, right
+        after building, before the first send."""
+        for turn in turns:
+            text = turn.get("text", "")
+            if turn.get("role") == "user":
+                self._history.append(msg.user(text))
+            elif turn.get("role") == "assistant" and text:
+                self._history.append(msg.assistant_text(text))
+
     def add_resource(self, resource: Any) -> None:
         """Register a resource with a .close() to release when the agent is evicted."""
         self._resources.append(resource)

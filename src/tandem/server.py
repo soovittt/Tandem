@@ -26,6 +26,7 @@ from tandem.agent.agent import Agent
 from tandem.app import build_mac_agent
 from tandem.agent.approval import ApprovalBroker, BrokeredApproval
 from tandem.config import AppConfig
+from tandem.conversation import ConversationStore
 from tandem.whatsapp_bridge import WhatsAppBridge
 
 logging.basicConfig(level=logging.INFO)  # surface tandem.* INFO logs (tool calls, errors)
@@ -45,6 +46,7 @@ async def lifespan(_app: "FastAPI"):
         _state.sessions.clear()
         for integration in _state.mcp[1]:
             _close_agent(integration)  # .close() duck-typed; releases the subprocess
+        _state.conversations.close()
     _whatsapp.stop()
 
 
@@ -86,6 +88,7 @@ class ApproveIn(BaseModel):
 class _State:
     config: AppConfig
     mcp: tuple  # (tools, integrations) — ONE set of MCP servers shared by all agents
+    conversations: ConversationStore  # persisted chat turns per session
     sessions: "OrderedDict[str, Agent]" = field(default_factory=OrderedDict)
 
 
@@ -113,8 +116,13 @@ def _get_state() -> _State:
             if _state is None:  # double-checked under lock
                 from tandem.mcp_servers import load_mcp_tools
 
+                config = AppConfig.from_env()
                 # Spawn the MCP servers ONCE here; every session agent shares them.
-                _state = _State(config=AppConfig.from_env(), mcp=load_mcp_tools())
+                _state = _State(
+                    config=config,
+                    mcp=load_mcp_tools(),
+                    conversations=ConversationStore(config.data_dir / "conversations.db"),
+                )
     return _state
 
 
@@ -135,6 +143,7 @@ def _agent_for(session_id: str) -> Agent:
     agent = build_mac_agent(
         state.config, approval=BrokeredApproval(session_id, _broker), mcp=state.mcp
     )
+    agent.seed_history(state.conversations.load(session_id))  # restore prior turns
     state.sessions[session_id] = agent
     return agent
 
@@ -162,6 +171,9 @@ def chat(body: ChatRequest) -> ChatResponse:
             steps=0,
             sources=[],
         )
+    convos = _get_state().conversations
+    convos.append(session_id, "user", body.message)
+    convos.append(session_id, "assistant", result.text)
     return ChatResponse(
         session_id=session_id,
         text=result.text,
@@ -179,14 +191,21 @@ def chat_stream(body: ChatRequest) -> StreamingResponse:
 
     def events():
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+        final_text = ""
         try:
             for event in _agent_for(session_id).stream(body.message, images=body.images):
+                if event.get("type") == "done":
+                    final_text = event.get("text", "")
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception:
             logging.getLogger("tandem.server").exception("stream failed for %s", session_id)
             done = {"type": "done", "text": "Sorry — I hit an error handling that one.",
                     "steps": 0, "sources": []}
             yield f"data: {json.dumps(done)}\n\n"
+            return
+        convos = _get_state().conversations
+        convos.append(session_id, "user", body.message)
+        convos.append(session_id, "assistant", final_text)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -250,6 +269,24 @@ def whatsapp_status() -> dict:
 def whatsapp_connect() -> dict:
     """Start the bridge (if needed) so a QR appears / it reconnects. Returns status."""
     return _whatsapp.ensure_running()
+
+
+@app.get("/conversation/{session_id}")
+def conversation(session_id: str) -> list[dict]:
+    """The persisted thread for a session, so the app restores it on open."""
+    return _get_state().conversations.load(session_id)
+
+
+@app.post("/conversation/{session_id}/clear")
+def conversation_clear(session_id: str) -> dict[str, bool]:
+    """Start a fresh chat: wipe the saved turns and drop the seeded agent."""
+    state = _get_state()
+    state.conversations.clear(session_id)
+    agent = state.sessions.pop(session_id, None)
+    if agent is not None:
+        _broker.drop(session_id)
+        _close_agent(agent)
+    return {"ok": True}
 
 
 @app.get("/pending/{session_id}")

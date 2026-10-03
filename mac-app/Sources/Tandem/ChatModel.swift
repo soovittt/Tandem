@@ -15,6 +15,18 @@ final class ChatModel: ObservableObject {
     @Published var pendingApproval: PendingInfo?
     @Published var focusPing = 0  // bumped to re-focus the field when summoned
 
+    init() { restore() }
+
+    /// Load the persisted conversation so the chat continues where it left off.
+    func restore() {
+        Backend.shared.fetchConversation { [weak self] turns in
+            guard let self, self.messages.isEmpty else { return }
+            self.messages = turns.map {
+                Message(role: $0.role == "user" ? .user : .assistant, text: $0.text)
+            }
+        }
+    }
+
     func submit() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy else { return }

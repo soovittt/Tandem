@@ -19,10 +19,35 @@ enum StreamEvent {
 final class Backend {
     static let shared = Backend()
     private let base = URL(string: "http://127.0.0.1:8000")!
-    private(set) var sessionId = UUID().uuidString
     private var polling = false
 
-    func newSession() { sessionId = UUID().uuidString }
+    /// Stable across app restarts so the same conversation is restored.
+    private(set) var sessionId: String = {
+        if let saved = UserDefaults.standard.string(forKey: "tandem.sessionId") { return saved }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: "tandem.sessionId")
+        return fresh
+    }()
+
+    func newSession() {
+        sessionId = UUID().uuidString
+        UserDefaults.standard.set(sessionId, forKey: "tandem.sessionId")
+    }
+
+    /// Restore the persisted thread for the current session (on launch).
+    func fetchConversation(completion: @escaping ([(role: String, text: String)]) -> Void) {
+        let url = base.appendingPathComponent("conversation/\(sessionId)")
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var turns: [(role: String, text: String)] = []
+            if let data, let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                turns = arr.compactMap {
+                    guard let role = $0["role"] as? String, let text = $0["text"] as? String else { return nil }
+                    return (role, text)
+                }
+            }
+            DispatchQueue.main.async { completion(turns) }
+        }.resume()
+    }
 
     /// Stream a message. `onEvent` fires per token/tool/done, `onPending` when the
     /// agent needs approval; `completion` ends the turn. All callbacks on the main actor.

@@ -39,6 +39,14 @@ struct CommandBarView: View {
                 .font(.system(size: 18))
                 .focused($focused)
                 .onSubmit { model.submit() }
+            if !model.messages.isEmpty && !model.busy {
+                Button { model.clear(); model.focusPing += 1 } label: {
+                    Image(systemName: "square.and.pencil").font(.system(size: 14, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("New chat")
+            }
             if model.busy {
                 ProgressView().controlSize(.small).scaleEffect(0.8)
             } else if !model.input.isEmpty {
