@@ -16,14 +16,13 @@ run tools (guardrail + approval) → feed results back → repeat, capped by max
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from tandem.agent.approval import ApprovalPolicy
+from tandem.agent.toolcall_codec import ToolCallCodec
 from tandem.domain import message as msg
 from tandem.domain.message import ToolCall, WireMessage
 from tandem.domain.tool import Source
@@ -80,6 +79,7 @@ class Agent:
         self._tool_mode = tool_mode
         self._reasoning = reasoning
         self._max_steps = max_steps
+        self._codec = ToolCallCodec()  # parses/salvages/cleans the tool-call wire format
         self._history: list[WireMessage] = [msg.system(self._build_system_prompt(persona))]
         # Closable resources (MCP servers, DB connections) released on close().
         self._resources: list[Any] = []
@@ -156,7 +156,7 @@ class Agent:
                 # and emits tool calls as TEXT (`<TOOLCALL>[name, k="v"]`), which the
                 # server parser misses. Salvage those so the action still runs; feed
                 # results back as a user turn (no tool role after a plain assistant).
-                salvaged = _salvage_tool_calls(result.text)
+                salvaged = self._codec.salvage(result.text)
                 if salvaged:
                     _log.info("salvaged %d text tool-call(s) from drifted output", len(salvaged))
                     self._history.append(msg.assistant_text(result.text))
@@ -186,7 +186,7 @@ class Agent:
             result = self._llm.chat(self._history, temperature=_TOOL_TEMPERATURE)  # no native tools
             last_text = result.text
             self._history.append(msg.assistant_text(result.text))
-            calls = _parse_toolcalls(result.text)
+            calls = self._codec.parse(result.text)
             if not calls:
                 return self._finalize(result.text, sources, step)
             for call in calls:
@@ -198,10 +198,10 @@ class Agent:
 
     # -- shared internals ----------------------------------------------------
     def _finalize(self, text: str, sources: list[Source], steps: int) -> AgentResponse:
-        # Nemotron reasoning models emit <think>..</think> traces; never show them.
-        text = _strip_think(text)
-        verdict = self._guardrails.run_output(text)
-        final = _strip_toolcalls(verdict.text if verdict.text is not None else text)
+        # Strip reasoning traces + any stray tool-call tags before the user sees it.
+        cleaned = self._codec.clean(text)
+        verdict = self._guardrails.run_output(cleaned)
+        final = verdict.text if verdict.text is not None else cleaned
         if not final:
             # The whole message was stripped (e.g. the model emitted only a stray
             # tool-call tag). Don't show a blank bubble.
@@ -252,7 +252,7 @@ class Agent:
             menu = "\n".join(f"- {s.name}: {s.description}" for s in skills)
             parts.append(f"Learned skills you can follow:\n{menu}")
         if self._tool_mode == "prompt":
-            tool_help = _tools_prompt(self._tools)
+            tool_help = self._codec.tools_prompt(self._tools.specs())
             if tool_help:
                 parts.append(tool_help)
         return "\n\n".join(parts)
@@ -265,90 +265,3 @@ _OPERATING_RULES = (
     "- Prefer using a tool over guessing. Say so when evidence is insufficient.\n"
     "- When you work out a repeatable procedure, save it as a skill."
 )
-
-_TOOLCALL_RE = re.compile(r"<tool_?call>\s*(\{.*?\})\s*</tool_?call>", re.DOTALL | re.IGNORECASE)
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-_DANGLING_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
-
-
-def _strip_think(text: str) -> str:
-    """Drop Nemotron reasoning traces: closed <think>..</think> blocks and any
-    dangling <think> with no close (truncated reasoning) before showing the user."""
-    text = _THINK_RE.sub("", text or "")
-    return _DANGLING_THINK_RE.sub("", text)
-
-
-def _tools_prompt(tools: ToolRegistry) -> str:
-    """Describe the tools + the exact call format for prompt-based tool calling."""
-    specs = tools.specs()
-    if not specs:
-        return ""
-    lines = [
-        "You can call tools. To call one, output EXACTLY this and nothing else:",
-        '<toolcall>{"name": "<tool_name>", "arguments": {<args>}}</toolcall>',
-        "Call one tool at a time. You MUST include the tool \"name\". After you see the "
-        "result, continue; when finished, reply normally with no <toolcall>.",
-        "",
-        "Available tools:",
-    ]
-    for spec in specs:
-        fn = spec["function"]
-        props = (fn.get("parameters") or {}).get("properties") or {}
-        args = ", ".join(props.keys())
-        lines.append(f"- {fn['name']}({args}): {fn['description']}")
-    return "\n".join(lines)
-
-
-def _parse_toolcalls(text: str) -> list[ToolCall]:
-    """Extract <toolcall>{...}</toolcall> blocks from model text into ToolCalls."""
-    calls: list[ToolCall] = []
-    for i, match in enumerate(_TOOLCALL_RE.finditer(text or "")):
-        try:
-            obj = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        name = obj.get("name")
-        if not name:
-            continue  # unnamed call — can't dispatch safely
-        calls.append(ToolCall(id=f"call_{i}", name=name, arguments=obj.get("arguments") or {}))
-    return calls
-
-
-_STRIP_TOOLCALL_RE = re.compile(
-    r"<\s*tool_?call\s*>.*?(?:<\s*/\s*tool_?call\s*>|$)", re.DOTALL | re.IGNORECASE
-)
-
-
-_TEXT_CALL_TAG_RE = re.compile(r"<\s*tool_?call\s*>(.*?)(?:<\s*/\s*tool_?call\s*>|$)", re.DOTALL | re.IGNORECASE)
-_BRACKET_CALL_RE = re.compile(r"\[\s*([a-zA-Z_]\w*)\s*(.*?)\]", re.DOTALL)
-_KWARG_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
-
-
-def _salvage_tool_calls(text: str) -> list[ToolCall]:
-    """Recover tool calls the model emitted as TEXT instead of native calls.
-
-    Handles both our JSON form `<toolcall>{"name":..,"arguments":..}</toolcall>`
-    and the ad-hoc bracket form the 8B drifts into: `<TOOLCALL>[name, k="v", ...]`.
-    """
-    if not text:
-        return []
-    json_calls = _parse_toolcalls(text)  # strict <toolcall>{json}</toolcall> form
-    if json_calls:
-        return json_calls
-    out: list[ToolCall] = []
-    for tag in _TEXT_CALL_TAG_RE.finditer(text):
-        bracket = _BRACKET_CALL_RE.search(tag.group(1))
-        if not bracket:
-            continue
-        name = bracket.group(1)
-        args = dict(_KWARG_RE.findall(bracket.group(2)))
-        out.append(ToolCall(id=f"salvaged_{len(out)}", name=name, arguments=args))
-    return out
-
-
-def _strip_toolcalls(text: str) -> str:
-    """Remove tool-call tags from a user-facing answer — JSON or ad-hoc inner form,
-    closed or dangling, any case. In native tool mode the model occasionally emits
-    a call as text (e.g. `<TOOLCALL>[recall, ...]`) instead of a native call; never
-    show that raw syntax to the user."""
-    return _STRIP_TOOLCALL_RE.sub("", text or "").strip()

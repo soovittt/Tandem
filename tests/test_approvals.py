@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 
-from tandem.approvals import ApprovalBroker, PendingApproval
+from tandem.agent.approval import ApprovalBroker, PendingApproval
 
 
 def test_id_correlation_and_grant() -> None:

@@ -29,7 +29,7 @@ from tandem.tools.code_execution import RunCommandTool
 from tandem.tools.memory_tools import RecallTool, RememberTool
 from tandem.tools.skill_tools import SaveSkillTool
 from tandem.tools.web_search import TavilyProvider, WebSearchTool
-from tandem.mac.pack import mac_app_tools, mac_system_tools
+from tandem.mac.pack import mac_system_tools
 from tandem.mcp_servers import load_mcp_tools
 
 MAC_PERSONA = (
@@ -45,10 +45,6 @@ DEFAULT_PERSONA = (
     "time. You keep the state of their work, connect evidence across sources, and "
     "help them decide the next useful step -- rather than just answering questions."
 )
-
-# Apple apps that apple-mcp covers; the native AppleScript tools are a fallback only.
-_APPLE_APP_TOOLS = frozenset({"messages", "notes", "reminders", "calendar", "mail", "contacts"})
-
 
 def _assemble_agent(
     config: AppConfig,
@@ -132,8 +128,7 @@ def build_mac_agent(
     Tools come from three composable sources (all behind the same Tool interface):
       1. memory/skills tools (remember / recall / save_skill) — via _assemble_agent
       2. system control (frontmost / open / minimize / hide / shortcut) — always on
-      3. MCP servers (apple-mcp for Apple apps, cua for any app) via TANDEM_MCP_SERVERS;
-         native AppleScript app tools are a fallback only when MCP doesn't cover them.
+      3. MCP servers (apple-mcp for Apple apps, cua for any app) via TANDEM_MCP_SERVERS.
 
     `mcp`: optional pre-loaded (tools, integrations) so MANY session agents share one
     set of MCP servers (the server loads them once at startup, avoiding a per-session
@@ -149,9 +144,6 @@ def build_mac_agent(
 
     extra: list[Tool] = list(mac_system_tools())
     extra.extend(mcp_tools)
-    # Native Apple-app tools only when no MCP server already covers those apps.
-    if not any(t.name in _APPLE_APP_TOOLS for t in mcp_tools):
-        extra.extend(mac_app_tools())
 
     agent = _assemble_agent(
         config,

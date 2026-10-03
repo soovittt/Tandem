@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from tandem.agent.agent import Agent
 from tandem.app import build_mac_agent
-from tandem.approvals import ApprovalBroker, BrokeredApproval
+from tandem.agent.approval import ApprovalBroker, BrokeredApproval
 from tandem.config import AppConfig
 
 logging.basicConfig(level=logging.INFO)  # surface tandem.* INFO logs (tool calls, errors)
