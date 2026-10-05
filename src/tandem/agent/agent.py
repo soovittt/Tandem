@@ -238,7 +238,7 @@ class Agent:
                 content, call_sources = self._run_tool_call(call)
                 sources.extend(call_sources)
                 self._history.append(msg.tool_result(call.id, content))
-        return self._finalize(last_text or "(stopped: step limit)", sources, self._max_steps)
+        return self._finalize(last_text or "I wasn't able to finish that one — mind telling me a bit more or trying a simpler step?", sources, self._max_steps)
 
     # -- prompt-based tool-calling loop (harness-owned) -----------------------
     def _loop_prompt(self) -> AgentResponse:
@@ -256,7 +256,7 @@ class Agent:
                 sources.extend(call_sources)
                 # Feed the result back as a user turn (no native tool role here).
                 self._history.append(msg.user(f"[tool result: {call.name}]\n{content}"))
-        return self._finalize(last_text or "(stopped: step limit)", sources, self._max_steps)
+        return self._finalize(last_text or "I wasn't able to finish that one — mind telling me a bit more or trying a simpler step?", sources, self._max_steps)
 
     # -- streaming native loop (yields events) -------------------------------
     def _loop_stream(self) -> Iterator[dict[str, Any]]:
@@ -298,7 +298,7 @@ class Agent:
                 content, srcs = self._run_tool_call(call)
                 sources.extend(srcs)
                 self._history.append(msg.tool_result(call.id, content))
-        resp = self._finalize(last_text or "(stopped: step limit)", sources, self._max_steps)
+        resp = self._finalize(last_text or "I wasn't able to finish that one — mind telling me a bit more or trying a simpler step?", sources, self._max_steps)
         yield self._done_event(resp.text, resp.steps, resp.sources)
 
     # -- shared internals ----------------------------------------------------
@@ -321,7 +321,14 @@ class Agent:
         if not verdict.allowed:
             return f"Blocked by policy: {verdict.reason}", []
         if tool.requires_approval and not self._approval.approve(call, tool):
-            return "The user declined to approve this action.", []
+            # NOT approved (declined, or the request expired). The action did NOT run —
+            # be explicit so the model never claims it completed something it didn't.
+            return (
+                f"NOT DONE: the '{call.name}' action was not approved, so it did NOT run. "
+                "Tell the user plainly it wasn't completed and offer to try again — do "
+                "NOT say you did it.",
+                [],
+            )
         _log.info("tool call %s(%s)", call.name, call.arguments)
         try:
             result = tool.run(**call.arguments)
@@ -371,6 +378,10 @@ _OPERATING_RULES = (
     "- Answer general questions (facts, explanations, writing, math, chat) directly from "
     "your own knowledge — no tool needed, and never refuse just because it isn't about "
     "the Mac.\n"
+    "- If a tool fails or you can't find what it needs (e.g. no matching contact or "
+    "chat), STOP after one honest attempt and tell the user plainly what happened and "
+    "what you need from them. Do NOT retry with guessed names or fire off unrelated "
+    "tools — one clear 'I couldn't do X because Y' beats thrashing.\n"
     "- Relevant memory is already provided to you; remember durable facts the user shares.\n"
     "- When you work out a repeatable procedure, save it as a skill."
 )

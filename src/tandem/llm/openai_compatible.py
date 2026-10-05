@@ -24,6 +24,7 @@ class OpenAICompatibleLLM:
 
     def __init__(self, config: LLMConfig) -> None:
         self._model = config.model
+        self._reasoning = config.reasoning
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     def _request_kwargs(
@@ -42,6 +43,15 @@ class OpenAICompatibleLLM:
         }
         if tools:
             kwargs["tools"] = tools
+        # Nemotron-3's reasoning toggle rides in chat_template_kwargs (the old
+        # "detailed thinking off" system line is a no-op on this model). With
+        # thinking off the model skips its hidden chain-of-thought — fast, and it
+        # never blows the token budget mid-thought (which would truncate the
+        # tool_call and surface as an empty "couldn't handle that" reply).
+        if self._reasoning in ("off", "on"):
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": self._reasoning == "on"}
+            }
         return kwargs
 
     def chat(
@@ -50,7 +60,7 @@ class OpenAICompatibleLLM:
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> ChatResult:
         response = self._client.chat.completions.create(
             **self._request_kwargs(messages, tools, temperature, max_tokens)
@@ -74,7 +84,7 @@ class OpenAICompatibleLLM:
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> "StreamingCompletion":
         """Stream the reply. Iterate it for content deltas; afterwards its `.result`
         holds the assembled ChatResult (full text + reassembled tool_calls)."""

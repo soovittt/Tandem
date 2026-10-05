@@ -64,9 +64,29 @@ MCP_SERVERS: list[McpServerConfig] = [
         approval_tools=("messages", "mail", "notes", "reminders", "calendar"),
     ),
     McpServerConfig(
+        # Universal computer-use via Cua Driver (trycua/cua, MIT) — the OSS framework's
+        # own background driver. Drives ANY native macOS app through the accessibility
+        # tree (get_window_state → structured elements + Markdown), clicks/types/menus,
+        # without stealing focus. Prebuilt binary (brew cask cuadriver → /Applications/
+        # CuaDriver.app + /opt/homebrew/bin/cua-driver). Requires a one-time Accessibility
+        # + Screen Recording grant: `cua-driver permissions grant`.
+        name="macos",
+        command=["/opt/homebrew/bin/cua-driver", "mcp"],
+        note="Universal background computer-use (Cua Driver): control any native macOS app "
+        "via the accessibility tree — get_window_state to read a window's elements, then "
+        "click / invoke_menu / type / hotkey. The fallback for apps with no dedicated tool.",
+    ),
+    McpServerConfig(
         name="filesystem",
         command=["npx", "-y", "@modelcontextprotocol/server-filesystem", str(Path.home())],
         note="Read/write files under the home directory.",
+    ),
+    McpServerConfig(
+        name="playwright",
+        command=["npx", "-y", "@playwright/mcp@latest"],
+        note="Full browser automation (navigate, click, fill forms, scrape any site) via "
+        "Microsoft's open-source Playwright MCP. Heavier than the native browser tools; "
+        "enable when you need real web ACTIONS, not just reading the current tab.",
     ),
     McpServerConfig(
         name="whatsapp",

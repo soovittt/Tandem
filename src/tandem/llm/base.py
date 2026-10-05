@@ -44,7 +44,7 @@ class LLMBackend(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> ChatResult: ...
 
     def chat_stream(
@@ -53,5 +53,5 @@ class LLMBackend(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> StreamingHandle: ...

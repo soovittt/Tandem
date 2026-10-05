@@ -246,7 +246,10 @@ def model_info() -> dict:
     try:
         import urllib.request
 
-        with urllib.request.urlopen(cfg.llm.base_url.rstrip("/") + "/models", timeout=4) as r:
+        req = urllib.request.Request(cfg.llm.base_url.rstrip("/") + "/models")
+        if cfg.llm.api_key:
+            req.add_header("Authorization", f"Bearer {cfg.llm.api_key}")
+        with urllib.request.urlopen(req, timeout=4) as r:
             reachable = r.status == 200
     except Exception:
         reachable = False

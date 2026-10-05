@@ -34,3 +34,8 @@ mac-app/AppIcon.iconset/
 vendor/whatsapp-mcp/whatsapp-bridge/whatsapp-bridge
 vendor/whatsapp-mcp/whatsapp-bridge/store/
 vendor/whatsapp-mcp/whatsapp-mcp-server/.venv/
+
+# stray test artifacts
+/AI News Oct
+/Open Apps
+.venv-browser/

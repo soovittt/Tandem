@@ -19,6 +19,16 @@ def as_applescript_string(value: str) -> str:
     return f'"{escaped}"'
 
 
+def running_app_names() -> list[str]:
+    """Names of all visible (non-background) application processes, e.g.
+    ['Safari', 'Notes', 'Spotify']. Shared by tools that resolve an app by name."""
+    ok, out = run_applescript(
+        'tell application "System Events" to get name of every application process '
+        "whose background only is false"
+    )
+    return [n.strip() for n in out.split(",") if n.strip()] if ok else []
+
+
 def run_applescript(script: str, *, timeout: float = 25.0) -> tuple[bool, str]:
     """Run an AppleScript source string. Returns (ok, stdout_or_error)."""
     try:

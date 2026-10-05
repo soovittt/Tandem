@@ -11,7 +11,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "openai>=3.19.2",
-    "python-dotenv>=1.2.3",
+    "python-dotenv>=1.2.2",
     "uvicorn>=0.54.0",
 ]
 
@@ -22,6 +22,10 @@ mem0 = ["mem0ai>=0.1.0"]
 mcp = [
     "mcp>=2.3.0",
 ]
+# Real-browser automation sub-agent (navigate/click/type/extract on any site)
+# runs browser-use in an ISOLATED venv (.venv-browser) — it pins openai==2.x
+# which conflicts with our openai>=3.x, so it must NOT share our venv. See
+# infra/setup-browser.sh; the WebTaskTool subprocesses that venv's python.
 
 [project.scripts]
 tandem = "tandem.cli:main"

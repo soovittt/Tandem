@@ -161,6 +161,43 @@ class HideAppTool(Tool):
         return ToolResult(content=f"Hid {proc}." if ok else f"Error: {out}")
 
 
+class SetVolumeTool(Tool):
+    name = "set_volume"
+    description = "Set the Mac's output volume (0–100). Use 0 to mute."
+    parameters = {
+        "type": "object",
+        "properties": {"level": {"type": "integer", "description": "Volume 0–100."}},
+        "required": ["level"],
+    }
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        try:
+            level = int(kwargs["level"])
+        except (KeyError, TypeError, ValueError):
+            return ToolResult(content="Give a volume level from 0 to 100.")
+        level = max(0, min(100, level))
+        ok, out = run_applescript(f"set volume output volume {level}")
+        return ToolResult(content=f"Volume set to {level}." if ok else f"Error: {out}")
+
+
+class SetDarkModeTool(Tool):
+    name = "set_dark_mode"
+    description = "Turn macOS Dark Mode on or off."
+    parameters = {
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean", "description": "true = dark, false = light."}},
+        "required": ["enabled"],
+    }
+
+    def run(self, **kwargs: Any) -> ToolResult:
+        enabled = bool(kwargs.get("enabled"))
+        val = "true" if enabled else "false"
+        ok, out = run_applescript(
+            f'tell application "System Events" to tell appearance preferences to set dark mode to {val}'
+        )
+        return ToolResult(content=f"Dark mode {'on' if enabled else 'off'}." if ok else f"Error: {out}")
+
+
 def tools() -> list[Tool]:
     return [
         FrontmostAppTool(),
@@ -169,4 +206,6 @@ def tools() -> list[Tool]:
         MinimizeWindowTool(),
         HideAppTool(),
         RunShortcutTool(),
+        SetVolumeTool(),
+        SetDarkModeTool(),
     ]

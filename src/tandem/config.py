@@ -36,6 +36,10 @@ class LLMConfig:
     base_url: str
     api_key: str
     model: str
+    # "off" | "on" | "none" -- Nemotron-3 reasoning toggle. "off"/"on" send
+    # chat_template_kwargs.enable_thinking to the server; "none" leaves the model
+    # default. Off = fast, no hidden chain-of-thought burning the token budget.
+    reasoning: str = "off"
 
 
 @dataclass(frozen=True)
@@ -62,10 +66,12 @@ class AppConfig:
                 "LLM_API_KEY is not set. Copy .env.example to .env and add your key."
             )
 
+        reasoning = os.getenv("LLM_REASONING", "off").lower()
         llm = LLMConfig(
             base_url=os.getenv("LLM_BASE_URL") or preset["base_url"],
             api_key=api_key,
             model=os.getenv("LLM_MODEL") or preset["model"],
+            reasoning=reasoning,
         )
 
         data_dir = Path(os.getenv("TANDEM_DATA_DIR", ".tandem")).expanduser()
@@ -77,5 +83,5 @@ class AppConfig:
             tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
             memory_backend=os.getenv("MEMORY_BACKEND", "sqlite").lower(),
             tool_mode=os.getenv("TOOL_MODE", "native").lower(),
-            reasoning=os.getenv("LLM_REASONING", "off").lower(),
+            reasoning=reasoning,
         )

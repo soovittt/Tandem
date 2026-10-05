@@ -69,8 +69,10 @@ class ApprovalBroker:
         self._lock = threading.Lock()
         self._states: dict[str, _SessionState] = {}
 
-    def request(self, session_id: str, approval: PendingApproval, *, timeout: float = 150.0) -> bool:
-        """Block until the client approves/denies THIS action, or deny on timeout."""
+    def request(self, session_id: str, approval: PendingApproval, *, timeout: float = 600.0) -> bool:
+        """Block until the client approves/denies THIS action, or deny on timeout.
+        The window is generous (10 min) so reading/thinking before tapping Approve
+        doesn't silently cancel the action."""
         with self._lock:
             state = self._states.setdefault(session_id, _SessionState())
             state.pending = approval

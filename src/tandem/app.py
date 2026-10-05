@@ -29,6 +29,7 @@ from tandem.tools.code_execution import RunCommandTool
 from tandem.tools.memory_tools import RememberTool
 from tandem.tools.skill_tools import SaveSkillTool
 from tandem.tools.web_search import TavilyProvider, WebSearchTool
+from tandem.mac import browser_agent
 from tandem.mac.pack import mac_system_tools
 from tandem.mcp_servers import load_mcp_tools
 from tandem.whatsapp_bridge import WhatsAppSendTool
@@ -36,11 +37,16 @@ from tandem.whatsapp_bridge import WhatsAppSendTool
 MAC_PERSONA = (
     "You are Tandem, a friendly, highly capable personal AI running on the user's Mac. "
     "You CAN control this Mac RIGHT NOW through your tools: open, switch, minimize and "
-    "hide apps; and read or act in Calendar, Reminders, Notes, Messages, Mail, Contacts, "
-    "Maps and WhatsApp. When the user asks you to DO one of these (e.g. 'open WhatsApp', "
-    "'make a note', 'text Mom'), just DO IT by calling the matching tool. NEVER reply "
-    "that you can't perform the action, and never give step-by-step instructions for "
-    "something you can do yourself — if a tool exists for it, use the tool. "
+    "hide apps; set the volume and Dark Mode; read or act in Calendar, Reminders, Notes, "
+    "Messages, Mail, Contacts, Maps and WhatsApp; read the browser tab the user is on, "
+    "open URLs and list tabs; search and read local files with Spotlight; control Spotify "
+    "and Apple Music; and read or set the clipboard. You can also search the web. "
+    "When the user asks you to DO something (e.g. 'open WhatsApp', 'make a note', 'text "
+    "Mom', 'what's on this page', 'find my resume', 'pause the music'), just DO IT by "
+    "calling the matching tool. For multi-step requests, chain tools: gather what you "
+    "need first (read calendar/contacts/files/web), then act. NEVER reply that you can't "
+    "perform the action, and never give step-by-step instructions for something you can "
+    "do yourself — if a tool exists for it, use the tool. "
     "You're also a great general assistant: answer questions, write, explain, do math "
     "and chat directly from your own knowledge when no action is needed. Consequential "
     "actions (sending a message, creating an event) need the user's approval. After "
@@ -151,9 +157,18 @@ def build_mac_agent(
     mcp_tools, mcp_integrations = mcp if mcp is not None else load_mcp_tools()
 
     extra: list[Tool] = list(mac_system_tools())
-    # Replace the raw whatsapp `send_message` with our name-resolving version (the
-    # model passes group/contact NAMES, not JIDs). Keep all other MCP tools as-is.
-    extra.extend(t for t in mcp_tools if t.name != "send_message")
+    # Web search (Tavily) powers research workflows: "look up X and save it to a note".
+    if config.tavily_api_key:
+        extra.append(WebSearchTool(TavilyProvider(config.tavily_api_key)))
+    # Real-browser sub-agent (browser-use, isolated venv) — on only once set up.
+    if browser_agent.is_available():
+        extra.append(browser_agent.WebTaskTool(config.llm))
+    # Drop two fragile/overlapping MCP tools in favor of our own reliable versions:
+    #   - whatsapp `send_message` → WhatsAppSendTool (resolves contact/group NAMES→JIDs)
+    #   - apple-mcp `notes` → native create_note/search_notes (apple-mcp errors when the
+    #     model omits `body`, then thrashes, and files notes into a "Claude" folder).
+    _replaced = {"send_message", "notes"}
+    extra.extend(t for t in mcp_tools if t.name not in _replaced)
     if any(t.name == "send_message" for t in mcp_tools):
         extra.append(WhatsAppSendTool())
 
@@ -165,7 +180,7 @@ def build_mac_agent(
         approval=approval,
         guardrails=guardrails,
         extra_tools=extra,
-        max_steps=8,
+        max_steps=14,  # multi-app workflows chain many tool calls (read → reason → act)
     )
     agent.add_resource(memory)  # per-agent memory handle, released on eviction
     # Only own (and close) MCP servers we loaded ourselves; shared ones belong to
